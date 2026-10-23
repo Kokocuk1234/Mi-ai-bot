@@ -59,7 +59,7 @@ def get_ai_response(user_text, history):
     messages.append({"role": "user", "content": user_text})
     
     data = {
-        "model": "llama-3.1-8b-instant",
+        "model": "llama3-70b-8192",
         "messages": messages,
         "temperature": 0.8
     }
