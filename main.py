@@ -191,6 +191,8 @@ def run_web():
 # ==========================================
 # ЗАПУСК
 # ==========================================
+res = requests.get("https://api.groq.com/openai/v1/models", headers={"Authorization": f"Bearer {GROQ_API_KEY}"})
+print("ДОСТУПНЫЕ МОДЕЛИ:", res.text)
 if __name__ == '__main__':
     print("Бот запускается...")
     
