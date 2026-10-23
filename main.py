@@ -182,14 +182,19 @@ def run_web():
 print(f"ПРОВЕРКА: Мой ID = {MY_ID}")
 print(f"ПРОВЕРКА: Токен начинается с {TELEGRAM_TOKEN[:10]}...")
 if __name__ == '__main__':
-    print("Бот запущен!")
+    print("Бот запускается...")
     
-    # Запускаем фоновую проверку (пишет первым)
+    # Твой URL на Render (обязательно с https)
+    RENDER_URL = "https://mi-ai-bot-bltz.onrender.com"
+    
+    # Устанавливаем Webhook
+    bot.remove_webhook()
+    time.sleep(1)
+    bot.set_webhook(url=f"{RENDER_URL}/{TELEGRAM_TOKEN}")
+    print("Webhook установлен!")
+    
+    # Запускаем фоновую проверку
     threading.Thread(target=check_boredom, daemon=True).start()
     
-    # Если мы на Render (есть переменная RENDER), запускаем веб-сервер
-    if os.environ.get("RENDER"):
-        run_web()
-    else:
-        # Если мы в Replit, запускаем обычный polling
-        bot.polling(none_stop=True)
+    # Запускаем веб-сервер
+    run_web()
