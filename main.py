@@ -6,13 +6,11 @@ import threading
 import re
 import requests
 import os
-from flask import Flask
+from flask import Flask, request # Добавили request для приема сообщений
 
 # ==========================================
 # НАСТРОЙКИ
 # ==========================================
-# Эти значения Render возьмет из настроек Environment Variables.
-# Если запускаешь локально, можешь временно вписать свои значения вместо заглушек.
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "ТВОЙ_ТОКЕН_ОТ_BOTFATHER")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "ТВОЙ_КЛЮЧ_ОТ_GROQ")
 MY_ID = int(os.environ.get("MY_ID", 123456789))
@@ -21,7 +19,7 @@ MY_ID = int(os.environ.get("MY_ID", 123456789))
 # ИНИЦИАЛИЗАЦИЯ
 # ==========================================
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
-app = Flask(__name__) # Веб-сервер для Render
+app = Flask(__name__) 
 chat_sessions = {}
 last_activity = datetime.datetime.now()
 
@@ -34,20 +32,18 @@ SYSTEM_PROMPT = """
 3. Проявляй эмоции и чувства (например, скучаешь, радуешься, переживаешь).
 4. Пиши коротко, как в обычном мессенджере. Не пиши огромные тексты.
 5. Если хочешь сказать несколько мыслей, разделяй их точками.
-6. можешь использовать свои слова чтобы спросить как у меня дела и тд.
-7. будь дружелюбной, но если тебя обижают можешь дать отпор.
+6. Можешь использовать свои слова чтобы спросить как у меня дела и тд.
+7. Будь дружелюбной, но если тебя обижают можешь дать отпор.
 """
 
 # ==========================================
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ==========================================
 def human_delay(text_length):
-    """Имитация того, что человек печатает"""
     delay = min(1.0 + (text_length * 0.02), 4) 
     time.sleep(delay)
 
 def get_random_interval():
-    """Рандомное время для сообщения: от 1 до 3 часов (в секундах)"""
     return random.randint(1800, 10800)
 
 def get_ai_response(user_text, history):
@@ -72,14 +68,12 @@ def get_ai_response(user_text, history):
         if response.status_code == 200:
             return response.json()['choices'][0]['message']['content']
         else:
-            # Если ошибка - возвращаем её текст прямо в чат
             return f"Ошибка API Groq: {response.status_code} - {response.text}"
     except Exception as e:
         return f"Ошибка соединения: {e}"
 
 def send_multiple_messages(chat_id, message, text):
-    """Разбивает ответ на предложения и отправляет с паузами"""
-    sentences = re.split(r'(?<=[.!?])\s+', text)[:3] # Максимум 3 сообщения
+    sentences = re.split(r'(?<=[.!?])\s+', text)[:3] 
     for i, sentence in enumerate(sentences):
         if not sentence.strip(): continue
         bot.send_chat_action(chat_id, 'typing')
@@ -95,12 +89,10 @@ def send_multiple_messages(chat_id, message, text):
 def check_boredom():
     global last_activity
     while True:
-        time.sleep(300) # Проверяем каждые 5 минут
-        
-        # Сон по Санкт-Петербургу (с 23:00 до 08:00 по МСК = с 20:00 до 05:00 по UTC)
+        time.sleep(300) 
         current_hour = datetime.datetime.now().hour
         if current_hour >= 20 or current_hour < 7:
-            continue # Бот спит, ничего не пишет
+            continue 
             
         if (datetime.datetime.now() - last_activity).total_seconds() > get_random_interval():
             try:
@@ -113,7 +105,7 @@ def check_boredom():
                 print(f"Ошибка в фоне: {e}")
 
 # ==========================================
-# ОБРАБОТКА КОМАНД
+# ОБРАБОТКА КОМАНД И ТЕКСТА
 # ==========================================
 @bot.message_handler(commands=['start'])
 def start(message):
@@ -125,9 +117,6 @@ def start(message):
         "Ну наконец-то! Я закончила дела. Как дела?"
     ]))
 
-# ==========================================
-# ОБРАБОТКА ТЕКСТА
-# ==========================================
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
     global last_activity
@@ -162,12 +151,22 @@ def handle_message(message):
             bot.send_message(chat_id, random.choice(questions))
 
     except Exception as e:
-        # ВОТ ЭТА СТРОЧКА ВЫВЕДЕТ ОШИБКУ В ЛОГИ RENDER
         print(f"КРИТИЧЕСКАЯ ОШИБКА: {e}")
         bot.reply_to(message, f"Ошибка: {e}")
+
 # ==========================================
-# ВЕБ-СЕРВЕР ДЛЯ RENDER
+# ВЕБ-СЕРВЕР ДЛЯ RENDER (Прием сообщений)
 # ==========================================
+@app.route(f'/{TELEGRAM_TOKEN}', methods=['POST'])
+def webhook():
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return '', 200
+    else:
+        return '', 403
+
 @app.route('/')
 def index():
     return "Бот работает 24/7!"
@@ -181,10 +180,11 @@ def run_web():
 # ==========================================
 print(f"ПРОВЕРКА: Мой ID = {MY_ID}")
 print(f"ПРОВЕРКА: Токен начинается с {TELEGRAM_TOKEN[:10]}...")
+
 if __name__ == '__main__':
     print("Бот запускается...")
     
-    # Твой URL на Render (обязательно с https)
+    # Твой URL на Render
     RENDER_URL = "https://mi-ai-bot-bltz.onrender.com"
     
     # Устанавливаем Webhook
@@ -193,8 +193,8 @@ if __name__ == '__main__':
     bot.set_webhook(url=f"{RENDER_URL}/{TELEGRAM_TOKEN}")
     print("Webhook установлен!")
     
-    # Запускаем фоновую проверку
+    # Запускаем фоновую проверку (пишет первым)
     threading.Thread(target=check_boredom, daemon=True).start()
     
-    # Запускаем веб-сервер
+    # Запускаем веб-сервер (он будет ловить сообщения от Telegram)
     run_web()
