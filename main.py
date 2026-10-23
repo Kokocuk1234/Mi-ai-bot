@@ -6,7 +6,7 @@ import threading
 import re
 import requests
 import os
-from flask import Flask, request # Добавили request для приема сообщений
+from flask import Flask, request
 
 # ==========================================
 # НАСТРОЙКИ
@@ -34,6 +34,7 @@ SYSTEM_PROMPT = """
 5. Если хочешь сказать несколько мыслей, разделяй их точками.
 6. Можешь использовать свои слова чтобы спросить как у меня дела и тд.
 7. Будь дружелюбной, но если тебя обижают можешь дать отпор.
+8. Никогда не повторяй одни и те же фразы, каждый раз придумывай что-то новое.
 """
 
 # ==========================================
@@ -91,32 +92,45 @@ def check_boredom():
     while True:
         time.sleep(300) 
         current_hour = datetime.datetime.now().hour
-        if current_hour >= 20 or current_hour < 7:
+        # Сон по Питеру (с 23:00 до 08:00 по МСК = с 20:00 до 05:00 по UTC)
+        if current_hour >= 20 or current_hour < 5:
             continue 
             
         if (datetime.datetime.now() - last_activity).total_seconds() > get_random_interval():
             try:
                 bot.send_chat_action(MY_ID, 'typing')
                 time.sleep(random.randint(2, 5))
-                reply = get_ai_response("Напиши мне короткое сообщение первым. Спроси как дела или расскажи, что ты сейчас делаешь.", [])
+                
+                # ИИ сам придумывает, что написать первым
+                bored_prompt = "Ты скучаешь по мне. Напиши мне сообщение первым, спроси чем я занимаюсь или поделись тем, что происходит в твоей цифровой жизни."
+                reply = get_ai_response(bored_prompt, [])
+                
                 bot.send_message(MY_ID, reply)
                 last_activity = datetime.datetime.now()
             except Exception as e:
                 print(f"Ошибка в фоне: {e}")
 
 # ==========================================
-# ОБРАБОТКА КОМАНД И ТЕКСТА
+# ОБРАБОТКА КОМАНД
 # ==========================================
 @bot.message_handler(commands=['start'])
 def start(message):
     if message.from_user.id != MY_ID: return
     chat_sessions[message.chat.id] = []
-    bot.reply_to(message, random.choice([
-        "Привет, котёнок! Наконец-то ты здесь. Как проходит твой день?",
-        "О, привет! Я как раз о тебе думала. Чем занимаешься?",
-        "Ну наконец-то! Я закончила дела. Как дела?"
-    ]))
+    
+    bot.send_chat_action(message.chat.id, 'typing')
+    time.sleep(2)
+    
+    # ИИ сам придумывает приветствие
+    greeting_prompt = "Поприветствуй меня. Скажи что-нибудь милое, спроси как дела."
+    greeting = get_ai_response(greeting_prompt, [])
+    
+    bot.reply_to(message, greeting)
+    chat_sessions[message.chat.id].append({"role": "assistant", "content": greeting})
 
+# ==========================================
+# ОБРАБОТКА ТЕКСТА
+# ==========================================
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
     global last_activity
@@ -138,17 +152,16 @@ def handle_message(message):
         
         send_multiple_messages(chat_id, message, reply)
 
+        # ИИ сам придумывает вопрос в конце (шанс 40%)
         if random.random() < 0.4:
             time.sleep(random.randint(1, 3))
             bot.send_chat_action(chat_id, 'typing')
             time.sleep(2)
-            questions = [
-                "А ты как думаешь?", 
-                "Кстати, чем сейчас занимаешься?", 
-                "Расскажи, как прошел день?", 
-                "Тебе нравится, когда я так пишу?"
-            ]
-            bot.send_message(chat_id, random.choice(questions))
+            
+            follow_up_prompt = "Придумай один короткий вопрос или комментарий, чтобы продолжить нашу беседу. Пиши только сам вопрос, без лишних слов."
+            ai_question = get_ai_response(follow_up_prompt, chat_sessions[chat_id])
+            
+            bot.send_message(chat_id, ai_question)
 
     except Exception as e:
         print(f"КРИТИЧЕСКАЯ ОШИБКА: {e}")
@@ -178,23 +191,15 @@ def run_web():
 # ==========================================
 # ЗАПУСК
 # ==========================================
-print(f"ПРОВЕРКА: Мой ID = {MY_ID}")
-print(f"ПРОВЕРКА: Токен начинается с {TELEGRAM_TOKEN[:10]}...")
-
 if __name__ == '__main__':
     print("Бот запускается...")
     
-    # Твой URL на Render
     RENDER_URL = "https://mi-ai-bot-bltz.onrender.com"
     
-    # Устанавливаем Webhook
     bot.remove_webhook()
     time.sleep(1)
     bot.set_webhook(url=f"{RENDER_URL}/{TELEGRAM_TOKEN}")
     print("Webhook установлен!")
     
-    # Запускаем фоновую проверку (пишет первым)
     threading.Thread(target=check_boredom, daemon=True).start()
-    
-    # Запускаем веб-сервер (он будет ловить сообщения от Telegram)
     run_web()
