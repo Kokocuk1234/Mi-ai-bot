@@ -145,12 +145,11 @@ def handle_message(message):
         
         chat_sessions[chat_id].append({"role": "user", "content": message.text})
         chat_sessions[chat_id].append({"role": "assistant", "content": reply})
-        chat_sessions[chat_id] = chat_sessions[chat_id][-50:] # Помним 50 последних сообщений
+        chat_sessions[chat_id] = chat_sessions[chat_id][-50:]
         
         send_multiple_messages(chat_id, message, reply)
 
-        # Иногда задаем свой вопрос в конце (шанс 20%)
-        if random.random() < 0.2:
+        if random.random() < 0.4:
             time.sleep(random.randint(1, 3))
             bot.send_chat_action(chat_id, 'typing')
             time.sleep(2)
@@ -163,9 +162,9 @@ def handle_message(message):
             bot.send_message(chat_id, random.choice(questions))
 
     except Exception as e:
-        print(f"Ошибка: {e}")
-        bot.reply_to(message, "Ой, что-то интернет тупит... Повтори?")
-
+        # ВОТ ЭТА СТРОЧКА ВЫВЕДЕТ ОШИБКУ В ЛОГИ RENDER
+        print(f"КРИТИЧЕСКАЯ ОШИБКА: {e}")
+        bot.reply_to(message, f"Ошибка: {e}")
 # ==========================================
 # ВЕБ-СЕРВЕР ДЛЯ RENDER
 # ==========================================
