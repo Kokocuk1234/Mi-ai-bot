@@ -48,7 +48,7 @@ def human_delay(text_length):
 
 def get_random_interval():
     """Рандомное время для сообщения: от 1 до 3 часов (в секундах)"""
-    return random.randint(600, 10800)
+    return random.randint(1800, 10800)
 
 def get_ai_response(user_text, history):
     """Запрос к нейросети Groq"""
