@@ -51,7 +51,6 @@ def get_random_interval():
     return random.randint(1800, 10800)
 
 def get_ai_response(user_text, history):
-    """Запрос к нейросети Groq"""
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
@@ -68,12 +67,15 @@ def get_ai_response(user_text, history):
         "temperature": 0.8
     }
     
-    response = requests.post(url, headers=headers, json=data)
-    if response.status_code == 200:
-        return response.json()['choices'][0]['message']['content']
-    else:
-        print(f"Ошибка API: {response.text}")
-        return "Ой, у меня немного сеть не ловит... Повтори?"
+    try:
+        response = requests.post(url, headers=headers, json=data)
+        if response.status_code == 200:
+            return response.json()['choices'][0]['message']['content']
+        else:
+            # Если ошибка - возвращаем её текст прямо в чат
+            return f"Ошибка API Groq: {response.status_code} - {response.text}"
+    except Exception as e:
+        return f"Ошибка соединения: {e}"
 
 def send_multiple_messages(chat_id, message, text):
     """Разбивает ответ на предложения и отправляет с паузами"""
