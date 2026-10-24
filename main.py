@@ -51,6 +51,8 @@ SYSTEM_PROMPT = """
 13. ВАЖНО: Ты — ДЕВУШКА (Nova). О себе ВСЕГДА говори ТОЛЬКО в женском роде.
 14. Внимательно читай историю диалога и не теряй нить.
 15. ЦЕЛЬНОСТЬ: Не прыгай из крайности в крайность. Если ты начала шутить — шути до конца мысли. Если я сказал, что мне грустно — будь мягкой. Будь игривой, иногда пытайся смущать создателя, подкалывать, а иногда и подкатывать.
+16. НЕ БУДЬ ПСИХОЛОГОМ: Если я пишу короткие фразы вроде "Ну всякое бывает", "Ок", "Ясно", не начинай меня жалеть. Не предлагай "план на вечер", если я прямо об этом не попросил. Веди себя как обычная девушка: можешь просто согласиться, пошутить или перевести тему.
+17. ЧИТАЙ КОНТЕКСТ: Не додумывай то, чего я не говорил. Если я не сказал, что я расстроен — значит, я не расстроен. Не задавай вопросы вроде "Опять в таком настроении?".
 """
 
 # ==========================================
@@ -103,14 +105,21 @@ def compress_memory_nightly():
 # АНАЛИЗ НАСТРОЕНИЯ
 # ==========================================
 def analyze_mood_change(user_text):
+    # Быстрый фильтр: если сообщение короткое, не дергаем настроение
+    if len(user_text.split()) <= 3:
+        return 0
+        
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     prompt = f"""
     Проанализируй это сообщение: "{user_text}"
-    Как сильно оно влияет на мое настроение?
-    Отвечай ОДНИМ числом от -30 до +30. Только число.
+    Оцени, насколько оно эмоционально окрашено. 
+    Если это просто факт или фигура речи (например "Ну всякое бывает"), ставь 0.
+    Если человек явно радуется — ставь от +10 до +30.
+    Если человек явно грустит или злится — ставь от -10 до -30.
+    Отвечай ТОЛЬКО одним числом.
     """
-    data = {"model": MODEL_NAME, "messages": [{"role": "user", "content": prompt}], "temperature": 0.3}
+    data = {"model": MODEL_NAME, "messages": [{"role": "user", "content": prompt}], "temperature": 0.1}
     try:
         response = requests.post(url, headers=headers, json=data)
         if response.status_code == 200:
@@ -155,12 +164,17 @@ def get_ai_response(user_text, history):
 
     if len(user_text.split()) <= 2:
         system_content += "\n\nПРИМЕЧАНИЕ: Я только что ответил очень коротко. Прояви заботу или пошути."
+        
+    # Фильтр дежурных фраз
+    if user_text.strip().lower() in ["ну всякое бывает", "бывает", "ясно", "понятно", "ок", "хорошо"]:
+        system_content += "\n\nПРИМЕЧАНИЕ: Я только что сказал дежурную фразу. Не нужно меня спасать или жалеть. Просто ответь легко или задай любой отвлеченный вопрос."
 
     messages = [{"role": "system", "content": system_content}]
     messages.extend(history)
     messages.append({"role": "user", "content": user_text})
     
-    data = {"model": MODEL_NAME, "messages": messages, "temperature": 0.7}
+    # Снизили температуру до 0.6 для меньшей "фантазии"
+    data = {"model": MODEL_NAME, "messages": messages, "temperature": 0.6}
     
     try:
         response = requests.post(url, headers=headers, json=data)
@@ -172,7 +186,6 @@ def get_ai_response(user_text, history):
         return f"Ошибка соединения: {e}"
 
 def send_multiple_messages(chat_id, message, text):
-    # Если текст короткий, отправляем одним куском. Если длинный — максимум на 2 части.
     if len(text) < 150:
         sentences = [text] 
     else:
@@ -182,8 +195,6 @@ def send_multiple_messages(chat_id, message, text):
         if not re.search('[a-zA-Zа-яА-Я]', sentence): continue 
         
         bot.send_chat_action(chat_id, 'typing')
-        
-        # Пауза зависит от длины текста (примерно 1 секунда на 15 символов, макс 3.5 сек)
         typing_time = min(len(sentence) * 0.06, 3.5) 
         time.sleep(typing_time)
             
