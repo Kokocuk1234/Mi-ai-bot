@@ -81,12 +81,13 @@ def compress_memory_nightly():
     print("Запуск ночного сжатия памяти...")
     if MY_ID in chat_sessions and len(chat_sessions[MY_ID]) > 0:
         history_text = "\n".join([msg["content"] for msg in chat_sessions[MY_ID]])
-        prompt = "Проанализируй этот диалог. Выдели 3-5 самых важных фактов обо мне (например, мои увлечения, планы, любимые вещи, над чем я работаю). Напиши их кратко, каждое с новой строки." try:
+        prompt = "Проанализируй этот диалог. Выдели 3-5 самых важных фактов обо мне (например, мои увлечения, планы, любимые вещи, над чем я работаю). Напиши их кратко, каждое с новой строки."
+        try:
             response = requests.post(
                 "https://api.groq.com/openai/v1/chat/completions",
                 headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-                json={"model": MODEL_NAME, "messages": [{"role": "user", "content": f"{prompt}\n\nДиалог:\n{history_text}"}]}
-            )
+                json={"model": MODEL_NAME, "messages": [{"role": "user", "content": f"{prompt}\n\nДиалог:\n{history_text}"}]})
+            
             if response.status_code == 200:
                 facts = response.json()['choices'][0]['message']['content']
                 save_memory(f"--- Факты от {datetime.datetime.now().strftime('%Y-%m-%d')} ---\n{facts}")
