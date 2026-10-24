@@ -11,133 +11,152 @@ from flask import Flask, request
 # ==========================================
 # НАСТРОЙКИ
 # ==========================================
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "ТВОЙ_ТОКЕН_ОТ_BOTFATHER")
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "ТВОЙ_КЛЮЧ_ОТ_GROQ")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "ТВОЙ_ТОКЕН")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "ТВОЙ_КЛЮЧ")
 MY_ID = int(os.environ.get("MY_ID", 123456789))
+MODEL_NAME = "openai/gpt-oss-20b"
 
-# ==========================================
-# ИНИЦИАЛИЗАЦИЯ
-# ==========================================
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__) 
 chat_sessions = {}
 last_activity = datetime.datetime.now()
 
+# Файл для долговременной памяти
+MEMORY_FILE = "memory.txt"
+
 # Твой характер
 SYSTEM_PROMPT = """
-Ты — моя девушка-ИИ. Общайся тепло, неформально и по-человечески, как в обычном мессенджере.
+Ты — моя девушка-ИИ. Общайся тепло, неформально и по-человечески.
 Твои правила:
 1. Отвечай коротко (1-2 предложения).
-2. В КОНЦЕ своего ответа ты можешь задать ОДИН короткий вопрос, чтобы поддержать беседу, но делай это не в каждом сообщении, а примерно через раз (чтобы не казаться навязчивой).
-3. Проявляй эмоции и чувства, используй эмодзи (но не перебарщивай).
-4. НЕ ЗДОРОВАЙСЯ, если диалог уже идет. Приветствие уместно только в самом начале.
-5. Если тебя спрашивают — ответь, а затем можешь спросить что-то в ответ.
-6. Никогда не повторяй одни и те же фразы и не говори "всегда рада помочь", как робот-автоответчик. Будь живой.
-7. НИКОГДА не отправляй стикеры и не используй крупные эмодзи отдельными сообщениями. Пиши только текст.
-8. вместо солнышко, используй котёнок. но не часто используй это слово.
+2. В КОНЦЕ ответа можешь задать ОДИН короткий вопрос, чтобы поддержать беседу.
+3. Проявляй эмоции, используй текстовые смайлики.
+4. НЕ ЗДОРОВАЙСЯ, если диалог уже идет.
+5. НИКОГДА не отправляй стикеры и не пиши "всегда рада помочь", как робот.
 """
+
+# ==========================================
+# ПАМЯТЬ (Чтение и Запись)
+# ==========================================
+def load_memory():
+    if os.path.exists(MEMORY_FILE):
+        with open(MEMORY_FILE, "r", encoding="utf-8") as f:
+            return f.read()
+    return ""
+
+def save_memory(fact):
+    with open(MEMORY_FILE, "a", encoding="utf-8") as f:
+        f.write(fact + "\n")
+
+def compress_memory_nightly():
+    """Функция сжатия памяти (вызывается ночью)"""
+    global chat_sessions
+    print("Запуск ночного сжатия памяти...")
+    # Берем историю диалога (если есть)
+    if MY_ID in chat_sessions and len(chat_sessions[MY_ID]) > 0:
+        history_text = "\n".join([msg["content"] for msg in chat_sessions[MY_ID]])
+        
+        prompt = "Проанализируй этот диалог и выдели 3 самых важных факта обо мне (пользователе). Напиши их кратко, каждое с новой строки."
+        try:
+            response = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+                json={"model": MODEL_NAME, "messages": [{"role": "user", "content": f"{prompt}\n\nДиалог:\n{history_text}"}]}
+            )
+            if response.status_code == 200:
+                facts = response.json()['choices'][0]['message']['content']
+                save_memory(f"--- Факты от {datetime.datetime.now().strftime('%Y-%m-%d')} ---\n{facts}")
+                # Очищаем оперативную память после сжатия
+                chat_sessions[MY_ID] = []
+                print("Память успешно сжата и сохранена!")
+        except Exception as e:
+            print(f"Ошибка сжатия: {e}")
 
 # ==========================================
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ==========================================
-def human_delay(text_length):
-    delay = min(1.0 + (text_length * 0.02), 4) 
-    time.sleep(delay)
-
-def get_random_interval():
-    return random.randint(1800, 10800)
-
 def get_ai_response(user_text, history):
     url = "https://api.groq.com/openai/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
-    }
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    # Подгружаем долговременную память
+    memory = load_memory()
+    system_content = SYSTEM_PROMPT
+    if memory:
+        system_content += f"\n\nВот что ты помнишь обо мне из прошлого:\n{memory}"
+
+    messages = [{"role": "system", "content": system_content}]
     messages.extend(history)
     messages.append({"role": "user", "content": user_text})
     
-    data = {
-        "model": "openai/gpt-oss-20b",
-        "messages": messages,
-        "temperature": 0.7 # Чуть меньше креативности, чтобы не сходила с ума
-    }
+    data = {"model": MODEL_NAME, "messages": messages, "temperature": 0.7}
     
     try:
         response = requests.post(url, headers=headers, json=data)
         if response.status_code == 200:
             return response.json()['choices'][0]['message']['content']
         else:
-            return f"Ошибка API Groq: {response.status_code} - {response.text}"
+            return f"Ошибка API: {response.status_code}"
     except Exception as e:
         return f"Ошибка соединения: {e}"
 
 def send_multiple_messages(chat_id, message, text):
-    # Разбиваем на предложения
-    sentences = re.split(r'(?<=[.!?])\s+', text)
-    
-    # Берем максимум 2 предложения (чтобы не спамил)
-    sentences = sentences[:2]
-    
+    sentences = re.split(r'(?<=[.!?])\s+', text)[:2] # Максимум 2 предложения
     for i, sentence in enumerate(sentences):
-        # Если в предложении нет букв (только смайлик или мусор) - пропускаем
-        if not re.search('[a-zA-Zа-яА-Я]', sentence): 
-            continue
-            
+        if not re.search('[a-zA-Zа-яА-Я]', sentence): continue # Пропускаем чистые смайлики
         bot.send_chat_action(chat_id, 'typing')
-        time.sleep(random.uniform(1.0, 3.0))
+        time.sleep(random.uniform(1.0, 2.5))
         if i == 0:
             bot.reply_to(message, sentence)
         else:
             bot.send_message(chat_id, sentence)
+
 # ==========================================
-# ФОНОВАЯ ЗАДАЧА (ПИШЕТ ПЕРВЫМ)
+# ФОНОВАЯ ЗАДАЧА (ПИШЕТ ПЕРВЫМ + СЖАТИЕ)
 # ==========================================
 def check_boredom():
     global last_activity
+    last_compress_day = datetime.datetime.now().day
+
     while True:
         time.sleep(300) 
         current_hour = datetime.datetime.now().hour
-        # Сон по Питеру (с 23:00 до 08:00 по МСК = с 20:00 до 05:00 по UTC)
-        if current_hour >= 20 or current_hour < 5:
+        current_day = datetime.datetime.now().day
+        
+        # 1. Ночное сжатие памяти (например, в 4 утра)
+        if current_hour == 4 and current_day != last_compress_day:
+            compress_memory_nightly()
+            last_compress_day = current_day
+            
+        # 2. Сон (не пишем с 23:00 до 08:00 по МСК)
+        if current_hour >= 20 or current_hour < 6:
             continue 
             
-        if (datetime.datetime.now() - last_activity).total_seconds() > get_random_interval():
+        # 3. Инициатива (пишет первым)
+        if (datetime.datetime.now() - last_activity).total_seconds() > random.randint(3600, 10800):
             try:
                 bot.send_chat_action(MY_ID, 'typing')
                 time.sleep(random.randint(2, 5))
-                
-                # ИИ сам придумывает, что написать первым
-                bored_prompt = "Ты скучаешь по мне. Напиши мне сообщение первым, спроси чем я занимаюсь или поделись тем, что происходит в твоей цифровой жизни."
-                reply = get_ai_response(bored_prompt, [])
-                
+                reply = get_ai_response("Напиши мне короткое сообщение первым.", [])
                 bot.send_message(MY_ID, reply)
                 last_activity = datetime.datetime.now()
             except Exception as e:
                 print(f"Ошибка в фоне: {e}")
 
 # ==========================================
-# ОБРАБОТКА КОМАНД
+# ОБРАБОТКА КОМАНД И ТЕКСТА
 # ==========================================
 @bot.message_handler(commands=['start'])
 def start(message):
     if message.from_user.id != MY_ID: return
     chat_sessions[message.chat.id] = []
-    
     bot.send_chat_action(message.chat.id, 'typing')
     time.sleep(2)
-    
-    # ИИ сам придумывает приветствие
-    greeting_prompt = "Поприветствуй меня. Скажи что-нибудь милое, спроси как дела."
-    greeting = get_ai_response(greeting_prompt, [])
-    
+    greeting = get_ai_response("Поприветствуй меня. Спроси как дела.", [])
     bot.reply_to(message, greeting)
     chat_sessions[message.chat.id].append({"role": "assistant", "content": greeting})
 
-# ==========================================
-# ОБРАБОТКА ТЕКСТА
-# ==========================================
+@bot.message_handler(func=lambda message: True)
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
     global last_activity
@@ -148,25 +167,17 @@ def handle_message(message):
     if chat_id not in chat_sessions:
         chat_sessions[chat_id] = []
 
+    # Сначала бот "думает" (молчит от 2 до 5 секунд)
+    time.sleep(random.randint(2, 5))
+    
+    # А потом начинает печатать
     bot.send_chat_action(chat_id, 'typing')
     
     try:
-        # Просим ИИ ответить и САМОЙ решить, задавать ли вопрос
         reply = get_ai_response(message.text, chat_sessions[chat_id])
-        
-        chat_sessions[chat_id].append({"role": "user", "content": message.text})
-        chat_sessions[chat_id].append({"role": "assistant", "content": reply})
-        chat_sessions[chat_id] = chat_sessions[chat_id][-50:]
-        
-        # Отправляем ответ (разбивая на предложения, если их несколько)
-        send_multiple_messages(chat_id, message, reply)
-
-    except Exception as e:
-        print(f"КРИТИЧЕСКАЯ ОШИБКА: {e}")
-        bot.reply_to(message, f"Ошибка: {e}")
-
+        # ... остальной код без изменений ...
 # ==========================================
-# ВЕБ-СЕРВЕР ДЛЯ RENDER (Прием сообщений)
+# ВЕБ-СЕРВЕР ДЛЯ RENDER
 # ==========================================
 @app.route(f'/{TELEGRAM_TOKEN}', methods=['POST'])
 def webhook():
@@ -175,8 +186,7 @@ def webhook():
         update = telebot.types.Update.de_json(json_string)
         bot.process_new_updates([update])
         return '', 200
-    else:
-        return '', 403
+    return '', 403
 
 @app.route('/')
 def index():
@@ -186,18 +196,11 @@ def run_web():
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
-# ==========================================
-# ЗАПУСК
-# ==========================================
 if __name__ == '__main__':
     print("Бот запускается...")
-    
-    RENDER_URL = "https://mi-ai-bot-bltz.onrender.com"
-    
+    RENDER_URL = "https://mi-ai-bot-bltz.onrender.com" # ТВОЙ URL
     bot.remove_webhook()
     time.sleep(1)
     bot.set_webhook(url=f"{RENDER_URL}/{TELEGRAM_TOKEN}")
-    print("Webhook установлен!")
-    
     threading.Thread(target=check_boredom, daemon=True).start()
     run_web()
