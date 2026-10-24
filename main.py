@@ -82,8 +82,30 @@ def get_ai_response(user_text, history):
     # Подгружаем долговременную память
     memory = load_memory()
     system_content = SYSTEM_PROMPT
+    
     if memory:
         system_content += f"\n\nВот что ты помнишь обо мне из прошлого:\n{memory}"
+
+    # === НОВЫЙ БЛОК: ДОБАВЛЯЕМ ВРЕМЯ ===
+    # Получаем текущее время по Москве (UTC+3)
+    now = datetime.datetime.utcnow() + datetime.timedelta(hours=3)
+    
+    # Определяем часть суток
+    hour = now.hour
+    if 5 <= hour < 12:
+        time_of_day = "Утро"
+    elif 12 <= hour < 18:
+        time_of_day = "День"
+    elif 18 <= hour < 23:
+        time_of_day = "Вечер"
+    else:
+        time_of_day = "Ночь"
+        
+    time_str = now.strftime("%H:%M")
+    
+    # Добавляем информацию о времени в системный промпт
+    system_content += f"\n\nВАЖНАЯ ИНФОРМАЦИЯ: Сейчас {time_str} ({time_of_day}) по Москве. Учитывай это время в своих ответах! Не спрашивай 'как прошел день', если сейчас утро. Уместно пожелать доброго утра или спросить, как спалось."
+    # ====================================
 
     messages = [{"role": "system", "content": system_content}]
     messages.extend(history)
