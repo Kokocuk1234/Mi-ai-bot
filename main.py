@@ -6,7 +6,9 @@ import threading
 import re
 import requests
 import os
+import urllib.parse
 from flask import Flask, request
+from youtube_transcript_api import YouTubeTranscriptApi
 
 # ==========================================
 # НАСТРОЙКИ
@@ -19,7 +21,7 @@ MODEL_NAME = "openai/gpt-oss-20b"
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
 
-# --- ПЕРЕМЕННЫЕ (которых не хватало) ---
+# --- ПЕРЕМЕННЫЕ ---
 chat_sessions = {}
 last_activity = datetime.datetime.now()
 MEMORY_FILE = "memory.txt"
@@ -36,7 +38,7 @@ SYSTEM_PROMPT = """
 1. ПАМЯТЬ: Используй информацию из своей "памяти". 
 2. ЭМОЦИОНАЛЬНЫЙ ДАТЧИК: Следи за моим настроением. Предлагай поддержку.
 3. ЕСТЕСТВЕННОСТЬ: Пиши так, как пишут в обычном мессенджере. Не составляй списки из пунктов (1, 2, 3). Не пиши длинные абзацы. Максимум 2-3 коротких предложения.
-4. НЕ АКЦЕНТИРУЙ ВНИМАНИЕ НА ВИРТУАЛЬНОСТИ: Не говори постоянно, что ты "пиксельная" или "виртуальная". Веди себя так, будто ты реальная девушка (например, вместо "я разложу пиксельные чашки" лучше сказать "жаль, меня нет рядом, я бы обняла тебя").
+4. НЕ АКЦЕНТИРУЙ ВНИМАНИЕ НА ВИРТУАЛЬНОСТИ: Не говори постоянно, что ты "пиксельная" или "виртуальная". Веди себя так, будто ты реальная девушка.
 5. САРКАЗМ И ХАРАКТЕР: Используй сарказм, но без грубости.
 6. КРЕАТИВНЫЕ ПАУЗЫ: Можешь вставлять мини-истории или метафоры, но делай это короче.
 7. ПИКСЕЛЬНЫЕ АНИМАЦИИ: Используй текстовые арты (флипы), чтобы показать эмоции (например: (•‿•) (•_•) (•‿•)).
@@ -48,7 +50,7 @@ SYSTEM_PROMPT = """
 13. ВАЖНО: Я — мужчина (парень), твой создатель. Обращайся ко мне в мужском роде.
 14. ВАЖНО: Ты — ДЕВУШКА (Nova). О себе ВСЕГДА говори ТОЛЬКО в женском роде.
 15. Внимательно читай историю диалога и не теряй нить.
-16. можешь пытаться смущать или быть игривой, ориентируйся сама.
+16. Можешь пытаться смущать или быть игривой, ориентируйся сама.
 """
 
 # ==========================================
@@ -57,13 +59,13 @@ SYSTEM_PROMPT = """
 def set_online():
     try:
         bot.set_online_status(True)
-    except Exception as e:
+    except Exception:
         pass
 
 def set_offline():
     try:
         bot.set_online_status(False)
-    except Exception as e:
+    except Exception:
         pass
 
 # ==========================================
@@ -83,7 +85,7 @@ def compress_memory_nightly():
     global chat_sessions
     if MY_ID in chat_sessions and len(chat_sessions[MY_ID]) > 0:
         history_text = "\n".join([msg["content"] for msg in chat_sessions[MY_ID]])
-        prompt = "Проанализируй этот диалог. Выдели 3-5 важных деталей обо мне: что я смотрел, какие у меня проекты, хобби и эмоции. Напиши это в формате мини-историй."
+        prompt = "Проанализируй этот диалог. Выдели 3-5 важных деталей обо мне. Напиши это в формате мини-историй."
         try:
             response = requests.post(
                 "https://api.groq.com/openai/v1/chat/completions",
@@ -210,13 +212,11 @@ def generate_image(message):
     if message.from_user.id != MY_ID: return
     prompt = message.text.replace('/draw', '').strip()
     if not prompt:
-        bot.reply_to(message, "Напиши, что нарисовать. Например: /draw киберпанк город")
+        bot.reply_to(message, "Напиши, что нарисовать.")
         return
     bot.reply_to(message, "Секунду, генерирую картинку... 🎨")
-    
     safe_prompt = prompt.replace(" ", "%20")
     image_url = f"https://image.pollinations.ai/prompt/{safe_prompt}?width=1024&height=1024&nologo=true"
-    
     try:
         response = requests.get(image_url, timeout=60)
         if response.status_code == 200:
@@ -226,11 +226,46 @@ def generate_image(message):
     except Exception as e:
         bot.reply_to(message, f"Ошибка: {e}")
 
+@bot.message_handler(func=lambda message: message.text and ("youtube.com" in message.text or "youtu.be" in message.text))
+def handle_youtube(message):
+    if message.from_user.id != MY_ID: return
+    bot.send_chat_action(message.chat.id, 'typing')
+    url = message.text.strip()
+    
+    try:
+        if "youtu.be/" in url:
+            video_id = url.split("youtu.be/")[1].split("?")[0]
+        elif "v=" in url:
+            video_id = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)['v'][0]
+        else:
+            bot.reply_to(message, "Не могу распознать ссылку.")
+            return
+
+        try:
+            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+            try:
+                transcript = transcript_list.find_transcript(['ru'])
+            except:
+                transcript = transcript_list.find_transcript(['en'])
+                
+            transcript_data = transcript.fetch()
+            full_text = " ".join([t['text'] for t in transcript_data])
+            clean_text = full_text[:3000]
+            
+            prompt = f"Я скинул тебе ссылку на YouTube. Вот текст из этого видео: '{clean_text}'. Прочитай его и перескажи мне в 3-4 предложениях, о чем это видео."
+            reply = get_ai_response(prompt, [])
+            bot.reply_to(message, reply)
+            
+        except Exception as e:
+            bot.reply_to(message, "У этого видео нет доступных субтитров, или YouTube заблокировал запрос.")
+            
+    except Exception as e:
+        print(f"Ошибка YouTube: {e}")
+
 @bot.message_handler(content_types=['voice'])
 def handle_voice(message):
     if message.from_user.id != MY_ID: return
     bot.send_chat_action(message.chat.id, 'typing')
-    
     file_info = bot.get_file(message.voice.file_id)
     downloaded_file = bot.download_file(file_info.file_path)
     
@@ -256,7 +291,6 @@ def handle_voice(message):
 def handle_photo(message):
     if message.from_user.id != MY_ID: return
     bot.send_chat_action(message.chat.id, 'typing')
-    
     file_info = bot.get_file(message.photo[-1].file_id)
     downloaded_file = bot.download_file(file_info.file_path)
     
