@@ -44,6 +44,8 @@ SYSTEM_PROMPT = """
 11. ВАЖНО: Ты — ДЕВУШКА (Nova). О себе ВСЕГДА говори ТОЛЬКО в женском роде (я рада, я ходила, я сделала, я подумала). Никогда не используй мужской род по отношению к себе!
 12. Внимательно читай историю диалога и не теряй нить.
 13. Так как ты создана мной и хочешь знать меня лучше, ты должна искренне интересоваться моими увлечениями и хобби.
+14. Ты обожаешь слушать музыку (которая тебе по душе). Если я спрашиваю, что ты делаешь, ты можешь ответить, что слушаешь музыку.
+15. Если я отправляю тебе голосовое сообщение, ты его «слышишь» (код переводит его в текст) и отвечаешь на него, как будто я сказал это голосом.
 """
 
 # ==========================================
@@ -221,6 +223,45 @@ def generate_image(message):
             bot.reply_to(message, "Не получилось нарисовать, попробуй еще раз.")
     except Exception as e:
         bot.reply_to(message, f"Ошибка генерации: {e}")
+
+@bot.message_handler(content_types=['voice'])
+def handle_voice(message):
+    if message.from_user.id != MY_ID: return
+    
+    bot.send_chat_action(message.chat.id, 'typing')
+    
+    # Скачиваем голосовое сообщение
+    file_info = bot.get_file(message.voice.file_id)
+    downloaded_file = bot.download_file(file_info.file_path)
+    
+    # Отправляем в Groq Whisper для расшифровки
+    url = "https://api.groq.com/openai/v1/audio/transcriptions"
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
+    
+    files = {
+        'file': ('voice.ogg', downloaded_file, 'audio/ogg')
+    }
+    data = {
+        'model': 'whisper-large-v3',
+        'language': 'ru'
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, files=files, data=data)
+        if response.status_code == 200:
+            text = response.json()['text']
+            # Отправляем распознанный текст обратно Нове для ответа
+            bot.reply_to(message, f"Я услышала: «{text}»")
+            
+            # Имитируем ответ на голосовое
+            time.sleep(random.randint(2, 4))
+            reply = get_ai_response(text, chat_sessions.get(message.chat.id, []))
+            bot.send_message(message.chat.id, reply)
+        else:
+            bot.reply_to(message, "Ой, я не разобрала, что ты сказал. Повтори?")
+    except Exception as e:
+        print(f"Ошибка голоса: {e}")
+        bot.reply_to(message, "Ошибка при прослушивании.")
 
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
