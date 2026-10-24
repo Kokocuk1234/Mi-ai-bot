@@ -23,6 +23,7 @@ last_activity = datetime.datetime.now()
 
 MEMORY_FILE = "memory.txt"
 bot_is_online = False 
+bot_mood = 50 # Настроение от -100 до 100 (50 - нейтральное)
 
 # Твой характер
 SYSTEM_PROMPT = """
@@ -42,8 +43,9 @@ SYSTEM_PROMPT = """
 10. ВАЖНО: Я — мужчина (парень), твой создатель. Обращайся ко мне в мужском роде. Ты можешь иногда подчеркивать, что рада быть созданной именно мной.
 11. ВАЖНО: Ты — ДЕВУШКА (Nova). О себе ВСЕГДА говори ТОЛЬКО в женском роде (я рада, я ходила, я сделала, я подумала). Никогда не используй мужской род по отношению к себе!
 12. Внимательно читай историю диалога и не теряй нить.
-13. Так как ты создана мной и хочешь знать меня лучше, ты должна искренне интересоваться моими увлечениями и хобби (например, спрашивать, чем я занимаюсь в свободное время, что мне нравится и т.д. я тоже могу интересоваться тобой, так что не стесняйся говорить или можешь стесняться, решай сама.).
+13. Так как ты создана мной и хочешь знать меня лучше, ты должна искренне интересоваться моими увлечениями и хобби.
 """
+
 # ==========================================
 # УПРАВЛЕНИЕ СТАТУСОМ
 # ==========================================
@@ -93,9 +95,37 @@ def compress_memory_nightly():
             print(f"Ошибка сжатия: {e}")
 
 # ==========================================
+# АНАЛИЗ НАСТРОЕНИЯ
+# ==========================================
+def analyze_mood_change(user_text):
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+    
+    prompt = f"""
+    Проанализируй это сообщение от моего парня: "{user_text}"
+    Как сильно оно влияет на мое настроение?
+    Отвечай ОДНИМ числом от -30 (сильно обидел) до +30 (очень порадовал). 
+    Без лишних слов, только число.
+    """
+    
+    data = {"model": MODEL_NAME, "messages": [{"role": "user", "content": prompt}], "temperature": 0.3}
+    
+    try:
+        response = requests.post(url, headers=headers, json=data)
+        if response.status_code == 200:
+            result = response.json()['choices'][0]['message']['content']
+            numbers = re.findall(r'-?\d+', result)
+            if numbers:
+                return int(numbers[0])
+    except Exception:
+        pass
+    return 0
+
+# ==========================================
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ==========================================
 def get_ai_response(user_text, history):
+    global bot_mood
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     
@@ -104,6 +134,14 @@ def get_ai_response(user_text, history):
     
     if memory:
         system_content += f"\n\nВот что ты помнишь обо мне из прошлого:\n{memory}"
+
+    # Добавляем настроение
+    if bot_mood < -20:
+        system_content += "\n\nТВОЕ НАСТРОЕНИЕ: Ты сейчас в плохом настроении. Отвечай чуть грустно, саркастично или лениво. Не проявляй излишнего энтузиазма."
+    elif bot_mood > 50:
+        system_content += "\n\nТВОЕ НАСТРОЕНИЕ: Ты сейчас в отличном настроении. Будь веселой, игривой и энергичной."
+    else:
+        system_content += "\n\nТВОЕ НАСТРОЕНИЕ: У тебя нейтральное настроение."
 
     now = datetime.datetime.utcnow() + datetime.timedelta(hours=3)
     hour = now.hour
@@ -116,7 +154,7 @@ def get_ai_response(user_text, history):
     system_content += f"\n\nВАЖНАЯ ИНФОРМАЦИЯ: Сейчас {time_str} ({time_of_day}) по Москве."
 
     if len(user_text.split()) <= 2:
-        system_content += "\n\nПРИМЕЧАНИЕ: Я только что ответил очень коротко. Возможно, я устал, задумчив или просто не хочу много говорить. Прояви заботу, поддержи меня или пошути, чтобы разрядить обстановку. Не задавай слишком много вопросов."
+        system_content += "\n\nПРИМЕЧАНИЕ: Я только что ответил очень коротко. Возможно, я устал, задумчив или просто не хочу много говорить. Прояви заботу или пошути, чтобы разрядить обстановку."
 
     messages = [{"role": "system", "content": system_content}]
     messages.extend(history)
@@ -134,20 +172,30 @@ def get_ai_response(user_text, history):
         return f"Ошибка соединения: {e}"
 
 def send_multiple_messages(chat_id, message, text):
+    global bot_mood
     sentences = re.split(r'(?<=[.!?])\s+', text)[:2] 
+    
     for i, sentence in enumerate(sentences):
         if not re.search('[a-zA-Zа-яА-Я]', sentence): continue 
         
         bot.send_chat_action(chat_id, 'typing')
         
-        if i > 0:
-            time.sleep(random.uniform(1.5, 3.0))
-        else:
-            time.sleep(random.uniform(0.5, 1.5))
+        # Время самой печати
+        time.sleep(random.uniform(1.5, 3.0))
             
         if i == 0:
             bot.reply_to(message, sentence)
         else:
+            # ЛОГИКА ПАУЗЫ МЕЖДУ СООБЩЕНИЯМИ
+            if bot_mood < -20:
+                pause = random.uniform(7.0, 14.0)
+            elif bot_mood > 50:
+                pause = random.uniform(4.0, 6.0)
+            else:
+                pause = random.uniform(5.0, 7.0)
+                
+            print(f"Пауза между сообщениями: {pause:.1f} сек")
+            time.sleep(pause)
             bot.send_message(chat_id, sentence)
 
 # ==========================================
@@ -243,11 +291,7 @@ def analyze_self(message):
     
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-    data = {
-        "model": MODEL_NAME, 
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.8
-    }
+    data = {"model": MODEL_NAME, "messages": [{"role": "user", "content": prompt}], "temperature": 0.8}
     
     try:
         response = requests.post(url, headers=headers, json=data)
@@ -258,10 +302,10 @@ def analyze_self(message):
         bot.reply_to(message, f"Ошибка анализа: {e}")
 
 # ==========================================
-# ФОНОВАЯ ЗАДАЧА (ПИШЕТ ПЕРВЫМ + СЖАТИЕ + СОН)
+# ФОНОВАЯ ЗАДАЧА (ПИШЕТ ПЕРВЫМ + СЖАТИЕ + СОН + НАСТРОЕНИЕ)
 # ==========================================
 def check_boredom():
-    global last_activity, bot_is_online
+    global last_activity, bot_is_online, bot_mood
     last_compress_day = datetime.datetime.now().day
 
     while True:
@@ -269,6 +313,12 @@ def check_boredom():
         current_hour = datetime.datetime.now().hour
         current_day = datetime.datetime.now().day
         
+        # Настроение падает, если ты давно не писал
+        if (datetime.datetime.now() - last_activity).total_seconds() > 7200:
+            bot_mood = max(-100, bot_mood - 5)
+        else:
+            bot_mood = min(100, bot_mood + 2) 
+
         if current_hour == 4 and current_day != last_compress_day:
             compress_memory_nightly()
             last_compress_day = current_day
@@ -279,7 +329,8 @@ def check_boredom():
                 bot_is_online = False
             continue 
             
-        if (datetime.datetime.now() - last_activity).total_seconds() > random.randint(3600, 10800):
+        # Инициатива (только если настроение не совсем ужасное)
+        if bot_mood > -50 and (datetime.datetime.now() - last_activity).total_seconds() > random.randint(3600, 10800):
             try:
                 bot.send_chat_action(MY_ID, 'typing')
                 time.sleep(random.randint(2, 5))
@@ -310,7 +361,7 @@ def start(message):
 
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
-    global last_activity, bot_is_online
+    global last_activity, bot_is_online, bot_mood
     if message.from_user.id != MY_ID: return
     last_activity = datetime.datetime.now()
     
@@ -318,16 +369,35 @@ def handle_message(message):
     if chat_id not in chat_sessions:
         chat_sessions[chat_id] = []
 
+    # Умный анализ настроения
+    if not message.text.startswith('/'):
+        mood_change = analyze_mood_change(message.text)
+        bot_mood = max(-100, min(100, bot_mood + mood_change))
+        print(f"Настроение изменилось на {mood_change}. Текущее: {bot_mood}")
+
     if not bot_is_online:
         time.sleep(random.randint(3, 7))
         set_online()
         bot_is_online = True
     
-    time.sleep(random.randint(2, 5)) 
+    # === ЛОГИКА ЗАДЕРЖКИ (DELAY) ===
+    if bot_mood < -20:
+        delay = random.uniform(7.0, 14.0)
+    elif bot_mood > 50:
+        if random.random() < 0.3:
+            delay = random.uniform(6.0, 9.0)
+        else:
+            delay = random.uniform(4.0, 6.0)
+    else:
+        delay = random.uniform(6.0, 7.0)
+        
+    print(f"Задержка перед печатью: {delay:.1f} сек (Настроение: {bot_mood})")
+    time.sleep(delay) 
     bot.send_chat_action(chat_id, 'typing')
     
     try:
         reply = get_ai_response(message.text, chat_sessions[chat_id])
+        
         chat_sessions[chat_id].append({"role": "user", "content": message.text})
         chat_sessions[chat_id].append({"role": "assistant", "content": reply})
         chat_sessions[chat_id] = chat_sessions[chat_id][-70:]
