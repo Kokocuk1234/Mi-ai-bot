@@ -22,6 +22,7 @@ bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
 
 # --- ПЕРЕМЕННЫЕ ---
+message_counter = 0 # Счетчик для анализа настроения
 chat_sessions = {}
 last_activity = datetime.datetime.now()
 MEMORY_FILE = "memory.txt"
@@ -405,7 +406,7 @@ def start(message):
 
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
-    global last_activity, bot_is_online, bot_mood
+    global last_activity, bot_is_online, bot_mood, message_counter
     if message.from_user.id != MY_ID: return
     last_activity = datetime.datetime.now()
     
@@ -413,11 +414,14 @@ def handle_message(message):
     if chat_id not in chat_sessions:
         chat_sessions[chat_id] = []
 
+    message_counter += 1
+
+    # Анализируем настроение только раз в 3 сообщения или если сообщение длинное (больше 5 слов)
     if not message.text.startswith('/'):
-        # Изменение настроения только если текст длиннее 10 символов
-        if len(message.text) > 10:
+        if message_counter % 3 == 0 or len(message.text.split()) > 5:
             mood_change = analyze_mood_change(message.text)
             bot_mood = max(-100, min(100, bot_mood + mood_change))
+            print(f"Настроение изменилось на {mood_change}. Текущее: {bot_mood}")
 
     if not bot_is_online:
         time.sleep(random.randint(3, 7))
@@ -427,9 +431,9 @@ def handle_message(message):
     if bot_mood < -20:
         delay = random.uniform(7.0, 14.0)
     elif bot_mood > 50:
-        delay = random.uniform(3.0, 5.0)
+        delay = random.uniform(4.0, 6.0)
     else:
-        delay = random.uniform(5.0, 7.0)
+        delay = random.uniform(6.0, 7.0)
         
     time.sleep(delay) 
     bot.send_chat_action(chat_id, 'typing')
@@ -443,7 +447,6 @@ def handle_message(message):
         send_multiple_messages(chat_id, message, reply)
     except Exception as e:
         print(f"ОШИБКА: {e}")
-
 # ==========================================
 # ВЕБ-СЕРВЕР
 # ==========================================
