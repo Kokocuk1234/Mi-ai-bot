@@ -157,7 +157,6 @@ def start(message):
     chat_sessions[message.chat.id].append({"role": "assistant", "content": greeting})
 
 @bot.message_handler(func=lambda message: True)
-@bot.message_handler(func=lambda message: True)
 def handle_message(message):
     global last_activity
     if message.from_user.id != MY_ID: return
@@ -167,15 +166,22 @@ def handle_message(message):
     if chat_id not in chat_sessions:
         chat_sessions[chat_id] = []
 
-    # Сначала бот "думает" (молчит от 2 до 5 секунд)
+    # Вот та самая пауза, которую мы добавили
     time.sleep(random.randint(2, 5))
     
-    # А потом начинает печатать
     bot.send_chat_action(chat_id, 'typing')
     
     try:
         reply = get_ai_response(message.text, chat_sessions[chat_id])
-        # ... остальной код без изменений ...
+        
+        chat_sessions[chat_id].append({"role": "user", "content": message.text})
+        chat_sessions[chat_id].append({"role": "assistant", "content": reply})
+        chat_sessions[chat_id] = chat_sessions[chat_id][-30:]
+        
+        send_multiple_messages(chat_id, message, reply)
+
+    except Exception as e:
+        print(f"ОШИБКА: {e}")
 # ==========================================
 # ВЕБ-СЕРВЕР ДЛЯ RENDER
 # ==========================================
