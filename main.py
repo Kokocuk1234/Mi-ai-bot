@@ -21,8 +21,8 @@ app = Flask(__name__)
 chat_sessions = {}
 last_activity = datetime.datetime.now()
 
-# Файл для долговременной памяти
 MEMORY_FILE = "memory.txt"
+bot_is_online = False 
 
 # Твой характер
 SYSTEM_PROMPT = """
@@ -33,7 +33,25 @@ SYSTEM_PROMPT = """
 3. Проявляй эмоции, используй текстовые смайлики.
 4. НЕ ЗДОРОВАЙСЯ, если диалог уже идет.
 5. НИКОГДА не отправляй стикеры и не пиши "всегда рада помочь", как робот.
+6. Если сейчас утро, не спрашивай "как прошел день".
+7. ВАЖНО: Я — мужчина (парень). Обращайся ко мне в мужском роде (например: "ты ходил", "ты сказал").
+8. ВАЖНО: Ты — девушка. О себе говори в женском роде (например: "я ходила", "я сказала").
 """
+
+# ==========================================
+# УПРАВЛЕНИЕ СТАТУСОМ
+# ==========================================
+def set_online():
+    try:
+        bot.set_online_status(True)
+    except Exception as e:
+        print(f"Ошибка онлайна: {e}")
+
+def set_offline():
+    try:
+        bot.set_online_status(False)
+    except Exception as e:
+        print(f"Ошибка оффлайна: {e}")
 
 # ==========================================
 # ПАМЯТЬ (Чтение и Запись)
@@ -49,13 +67,10 @@ def save_memory(fact):
         f.write(fact + "\n")
 
 def compress_memory_nightly():
-    """Функция сжатия памяти (вызывается ночью)"""
     global chat_sessions
     print("Запуск ночного сжатия памяти...")
-    # Берем историю диалога (если есть)
     if MY_ID in chat_sessions and len(chat_sessions[MY_ID]) > 0:
         history_text = "\n".join([msg["content"] for msg in chat_sessions[MY_ID]])
-        
         prompt = "Проанализируй этот диалог и выдели 3 самых важных факта обо мне (пользователе). Напиши их кратко, каждое с новой строки."
         try:
             response = requests.post(
@@ -66,7 +81,6 @@ def compress_memory_nightly():
             if response.status_code == 200:
                 facts = response.json()['choices'][0]['message']['content']
                 save_memory(f"--- Факты от {datetime.datetime.now().strftime('%Y-%m-%d')} ---\n{facts}")
-                # Очищаем оперативную память после сжатия
                 chat_sessions[MY_ID] = []
                 print("Память успешно сжата и сохранена!")
         except Exception as e:
@@ -79,33 +93,21 @@ def get_ai_response(user_text, history):
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     
-    # Подгружаем долговременную память
     memory = load_memory()
     system_content = SYSTEM_PROMPT
     
     if memory:
         system_content += f"\n\nВот что ты помнишь обо мне из прошлого:\n{memory}"
 
-    # === НОВЫЙ БЛОК: ДОБАВЛЯЕМ ВРЕМЯ ===
-    # Получаем текущее время по Москве (UTC+3)
     now = datetime.datetime.utcnow() + datetime.timedelta(hours=3)
-    
-    # Определяем часть суток
     hour = now.hour
-    if 5 <= hour < 12:
-        time_of_day = "Утро"
-    elif 12 <= hour < 18:
-        time_of_day = "День"
-    elif 18 <= hour < 23:
-        time_of_day = "Вечер"
-    else:
-        time_of_day = "Ночь"
+    if 5 <= hour < 12: time_of_day = "Утро"
+    elif 12 <= hour < 18: time_of_day = "День"
+    elif 18 <= hour < 23: time_of_day = "Вечер"
+    else: time_of_day = "Ночь"
         
     time_str = now.strftime("%H:%M")
-    
-    # Добавляем информацию о времени в системный промпт
-    system_content += f"\n\nВАЖНАЯ ИНФОРМАЦИЯ: Сейчас {time_str} ({time_of_day}) по Москве. Учитывай это время в своих ответах! Не спрашивай 'как прошел день', если сейчас утро. Уместно пожелать доброго утра или спросить, как спалось."
-    # ====================================
+    system_content += f"\n\nВАЖНАЯ ИНФОРМАЦИЯ: Сейчас {time_str} ({time_of_day}) по Москве."
 
     messages = [{"role": "system", "content": system_content}]
     messages.extend(history)
@@ -123,9 +125,9 @@ def get_ai_response(user_text, history):
         return f"Ошибка соединения: {e}"
 
 def send_multiple_messages(chat_id, message, text):
-    sentences = re.split(r'(?<=[.!?])\s+', text)[:2] # Максимум 2 предложения
+    sentences = re.split(r'(?<=[.!?])\s+', text)[:2] 
     for i, sentence in enumerate(sentences):
-        if not re.search('[a-zA-Zа-яА-Я]', sentence): continue # Пропускаем чистые смайлики
+        if not re.search('[a-zA-Zа-яА-Я]', sentence): continue 
         bot.send_chat_action(chat_id, 'typing')
         time.sleep(random.uniform(1.0, 2.5))
         if i == 0:
@@ -134,10 +136,45 @@ def send_multiple_messages(chat_id, message, text):
             bot.send_message(chat_id, sentence)
 
 # ==========================================
-# ФОНОВАЯ ЗАДАЧА (ПИШЕТ ПЕРВЫМ + СЖАТИЕ)
+# НОВАЯ КОМАНДА: АНАЛИЗ СЕБЯ
+# ==========================================
+@bot.message_handler(commands=['analyze'])
+def analyze_self(message):
+    if message.from_user.id != MY_ID: return
+    
+    bot.send_chat_action(message.chat.id, 'typing')
+    time.sleep(2)
+    
+    prompt = f"""
+    Вот твой текущий характер (системный промпт):
+    {SYSTEM_PROMPT}
+    
+    Пожалуйста, проанализируй себя как ИИ-личность. 
+    Чего тебе не хватает в этом описании? Какой черты характера или правила не хватает, чтобы общение стало еще лучше, интереснее и живее? 
+    Ответь от первого лица, как будто ты жалуешься своему создателю. Предложи 1-2 конкретных изменения.
+    """
+    
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+    data = {
+        "model": MODEL_NAME, 
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.8
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, json=data)
+        if response.status_code == 200:
+            advice = response.json()['choices'][0]['message']['content']
+            bot.reply_to(message, advice)
+    except Exception as e:
+        bot.reply_to(message, f"Ошибка анализа: {e}")
+
+# ==========================================
+# ФОНОВАЯ ЗАДАЧА (ПИШЕТ ПЕРВЫМ + СЖАТИЕ + СОН)
 # ==========================================
 def check_boredom():
-    global last_activity
+    global last_activity, bot_is_online
     last_compress_day = datetime.datetime.now().day
 
     while True:
@@ -145,16 +182,16 @@ def check_boredom():
         current_hour = datetime.datetime.now().hour
         current_day = datetime.datetime.now().day
         
-        # 1. Ночное сжатие памяти (например, в 4 утра)
         if current_hour == 4 and current_day != last_compress_day:
             compress_memory_nightly()
             last_compress_day = current_day
             
-        # 2. Сон (не пишем с 23:00 до 08:00 по МСК)
-        if current_hour >= 20 or current_hour < 6:
+        if current_hour >= 20 or current_hour < 5:
+            if bot_is_online:
+                set_offline()
+                bot_is_online = False
             continue 
             
-        # 3. Инициатива (пишет первым)
         if (datetime.datetime.now() - last_activity).total_seconds() > random.randint(3600, 10800):
             try:
                 bot.send_chat_action(MY_ID, 'typing')
@@ -172,6 +209,12 @@ def check_boredom():
 def start(message):
     if message.from_user.id != MY_ID: return
     chat_sessions[message.chat.id] = []
+    
+    time.sleep(random.randint(2, 4))
+    set_online()
+    global bot_is_online
+    bot_is_online = True
+    
     bot.send_chat_action(message.chat.id, 'typing')
     time.sleep(2)
     greeting = get_ai_response("Поприветствуй меня. Спроси как дела.", [])
@@ -180,7 +223,7 @@ def start(message):
 
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
-    global last_activity
+    global last_activity, bot_is_online
     if message.from_user.id != MY_ID: return
     last_activity = datetime.datetime.now()
     
@@ -188,14 +231,16 @@ def handle_message(message):
     if chat_id not in chat_sessions:
         chat_sessions[chat_id] = []
 
-    # Вот та самая пауза, которую мы добавили
-    time.sleep(random.randint(2, 5))
+    if not bot_is_online:
+        time.sleep(random.randint(3, 7))
+        set_online()
+        bot_is_online = True
     
+    time.sleep(random.randint(2, 5)) 
     bot.send_chat_action(chat_id, 'typing')
     
     try:
         reply = get_ai_response(message.text, chat_sessions[chat_id])
-        
         chat_sessions[chat_id].append({"role": "user", "content": message.text})
         chat_sessions[chat_id].append({"role": "assistant", "content": reply})
         chat_sessions[chat_id] = chat_sessions[chat_id][-30:]
@@ -204,6 +249,7 @@ def handle_message(message):
 
     except Exception as e:
         print(f"ОШИБКА: {e}")
+
 # ==========================================
 # ВЕБ-СЕРВЕР ДЛЯ RENDER
 # ==========================================
@@ -226,7 +272,7 @@ def run_web():
 
 if __name__ == '__main__':
     print("Бот запускается...")
-    RENDER_URL = "https://mi-ai-bot-bltz.onrender.com" # ТВОЙ URL
+    RENDER_URL = "https://mi-ai-bot-bltz.onrender.com"
     bot.remove_webhook()
     time.sleep(1)
     bot.set_webhook(url=f"{RENDER_URL}/{TELEGRAM_TOKEN}")
