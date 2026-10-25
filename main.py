@@ -117,7 +117,7 @@ def analyze_mood_change(user_text):
     """
     data = {"model": MODEL_NAME, "messages": [{"role": "user", "content": prompt}], "temperature": 0.1}
     try:
-        response = requests.post(url, headers=headers, json=data)
+        response = requests.post(url, headers=headers, json=data, timeout=20)
         if response.status_code == 200:
             result = response.json()['choices'][0]['message']['content']
             numbers = re.findall(r'-?\d+', result)
@@ -182,7 +182,7 @@ def get_ai_response(user_text, history):
     data = {"model": MODEL_NAME, "messages": messages, "temperature": 0.6}
     
     try:
-        response = requests.post(url, headers=headers, json=data)
+        response = requests.post(url, headers=headers, json=data, timeout=10)
         if response.status_code == 200:
             return response.json()['choices'][0]['message']['content']
         else:
