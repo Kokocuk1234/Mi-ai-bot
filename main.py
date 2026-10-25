@@ -149,26 +149,27 @@ def get_ai_response(user_text, history):
         system_content += "\n\nТВОЕ НАСТРОЕНИЕ: У тебя нейтральное настроение."
 
     # Добавляем время и день недели
-now = datetime.datetime.utcnow() + datetime.timedelta(hours=3)
-hour = now.hour
-if 5 <= hour < 12: time_of_day = "Утро"
-elif 12 <= hour < 18: time_of_day = "День"
-elif 18 <= hour < 23: time_of_day = "Вечер"
-else: time_of_day = "Ночь"
-    
-time_str = now.strftime("%H:%M")
+    now = datetime.datetime.utcnow() + datetime.timedelta(hours=3)
+    hour = now.hour
+    if 5 <= hour < 12: time_of_day = "Утро"
+    elif 12 <= hour < 18: time_of_day = "День"
+    elif 18 <= hour < 23: time_of_day = "Вечер"
+    else: time_of_day = "Ночь"
+        
+    time_str = now.strftime("%H:%M")
 
-# Определяем день недели
-weekdays = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
-weekday = weekdays[now.weekday()]
+    # Определяем день недели
+    weekdays = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
+    weekday = weekdays[now.weekday()]
 
-# Проверяем, выходной ли это
-is_weekend = "Да (выходной)" if now.weekday() >= 5 else "Нет (учебный день)"
+    # Проверяем, выходной ли это
+    is_weekend = "Да (выходной)" if now.weekday() >= 5 else "Нет (учебный день)"
 
-system_content += f"\n\nВАЖНАЯ ИНФОРМАЦИЯ: Сейчас {time_str} ({time_of_day}) по Москве. Сегодня {weekday}. Выходной: {is_weekend}. Учитывай это в общении."
+    system_content += f"\n\nВАЖНАЯ ИНФОРМАЦИЯ: Сейчас {time_str} ({time_of_day}) по Москве. Сегодня {weekday}. Выходной: {is_weekend}. Учитывай это в общении."
 
-if len(user_text.split()) <= 2:
-    system_content += "\n\nПРИМЕЧАНИЕ: Я только что ответил очень коротко. Прояви заботу или пошути."        
+    if len(user_text.split()) <= 2:
+        system_content += "\n\nПРИМЕЧАНИЕ: Я только что ответил очень коротко. Прояви заботу или пошути."        
+        
     # Фильтр дежурных фраз
     if user_text.strip().lower() in ["ну всякое бывает", "бывает", "ясно", "понятно", "ок", "хорошо"]:
         system_content += "\n\nПРИМЕЧАНИЕ: Я только что сказал дежурную фразу. Не нужно меня спасать или жалеть. Просто ответь легко или задай любой отвлеченный вопрос."
