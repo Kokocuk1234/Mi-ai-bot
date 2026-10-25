@@ -27,7 +27,8 @@ chat_sessions = {}
 last_activity = datetime.datetime.now()
 MEMORY_FILE = "memory.txt"
 bot_is_online = False 
-bot_mood = 50 
+bot_mood = 50
+last_bot_message_time = datetime.datetime.now() # Время последнего сообщения от бота
 
 # --- ХАРАКТЕР ---
 
@@ -364,7 +365,7 @@ def analyze_self(message):
 # ФОНОВАЯ ЗАДАЧА
 # ==========================================
 def check_boredom():
-    global last_activity, bot_is_online, bot_mood
+    global last_activity, bot_is_online, bot_mood, last_bot_message_time
     last_compress_day = datetime.datetime.now().day
 
     while True:
@@ -372,6 +373,7 @@ def check_boredom():
         current_hour = datetime.datetime.now().hour
         current_day = datetime.datetime.now().day
         
+        # Настроение падает, если ты давно не писал
         if (datetime.datetime.now() - last_activity).total_seconds() > 7200:
             bot_mood = max(-100, bot_mood - 5)
         else:
@@ -384,16 +386,21 @@ def check_boredom():
         if current_hour >= 20 or current_hour < 5:
             continue 
             
-        if bot_mood > -50 and (datetime.datetime.now() - last_activity).total_seconds() > random.randint(600, 10800):
+        # Проверяем: прошло ли время с твоего последнего сообщения И с её последнего сообщения
+        time_since_user = (datetime.datetime.now() - last_activity).total_seconds()
+        time_since_bot = (datetime.datetime.now() - last_bot_message_time).total_seconds()
+        
+        # Она пишет, только если ты молчишь уже 10 минут-3 часа, И она сама не писала последний час
+        if bot_mood > -50 and time_since_user > random.randint(600, 10800) and time_since_bot > 3600:
             try:
                 bot.send_chat_action(MY_ID, 'typing')
                 time.sleep(random.randint(2, 5))
-                reply = get_ai_response("Напиши мне короткое сообщение первым.", [])
+                reply = get_ai_response("Напиши мне короткое сообщение первым. Но помни, мы недавно общались, так что не здоровайся, а просто продолжи тему или спроси что-то по делу.", [])
                 bot.send_message(MY_ID, reply)
                 last_activity = datetime.datetime.now()
+                last_bot_message_time = datetime.datetime.now() # Обновляем время её сообщения
             except Exception as e:
                 print(f"Ошибка в фоне: {e}")
-
 # ==========================================
 # ОБРАБОТКА ТЕКСТА
 # ==========================================
@@ -413,6 +420,7 @@ def handle_message(message):
     global last_activity, bot_is_online, bot_mood, message_counter
     if message.from_user.id != MY_ID: return
     last_activity = datetime.datetime.now()
+    last_bot_message_time = datetime.datetime.now()
     
     chat_id = message.chat.id
     if chat_id not in chat_sessions:
