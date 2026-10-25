@@ -193,10 +193,12 @@ def get_ai_response(user_text, history):
         return f"Ошибка соединения: {e}"
 
 def send_multiple_messages(chat_id, message, text):
-    if len(text) < 150:
-        sentences = [text] 
-    else:
-        sentences = re.split(r'(?<=[.!?])\s+', text)[:2] 
+    # УДАЛЯЕМ ВСЕ ЭМОДЗИ ИЗ ТЕКСТА (оставляем только буквы, цифры, знаки препинания и пробелы)
+    import re
+    # Этот код удаляет все символы, кроме букв, цифр, пробелов и базовой пунктуации
+    text = re.sub(r'[^\w\s.,!?;:()\-]', '', text)
+    
+    sentences = re.split(r'(?<=[.!?])\s+', text)[:2]
     
     for i, sentence in enumerate(sentences):
         if not re.search('[a-zA-Zа-яА-Я]', sentence): continue 
@@ -208,9 +210,8 @@ def send_multiple_messages(chat_id, message, text):
         if i == 0:
             bot.reply_to(message, sentence)
         else:
-            time.sleep(random.uniform(1.0, 2.0)) 
+            time.sleep(random.uniform(2.0, 4.0)) 
             bot.send_message(chat_id, sentence)
-
 # ==========================================
 # ОБРАБОТЧИКИ КОМАНД И МЕДИА
 # ==========================================
