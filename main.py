@@ -222,6 +222,22 @@ def set_flirt(message):
     bot_mood = 80
     bot.reply_to(message, "Хм, ладно. Сегодня я в настроении помурлыкать (￣ω￣)")
 
+@bot.message_handler(commands=['forget'])
+def forget_everything(message):
+    if message.from_user.id != MY_ID: return
+    global chat_sessions
+    
+    # 1. Очищаем оперативную память (историю сообщений)
+    chat_sessions[message.chat.id] = []
+    
+    # 2. Очищаем файл долговременной памяти
+    try:
+        if os.path.exists(MEMORY_FILE):
+            open(MEMORY_FILE, 'w').close() # Открываем и сразу закрываем - файл становится пустым
+        bot.reply_to(message, "Всё, я всё забыла. Чистый лист. О чём поговорим? 😊")
+    except Exception as e:
+        bot.reply_to(message, f"Не удалось очистить память: {e}")
+
 @bot.message_handler(commands=['remember', 'story'])
 def remember_fact(message):
     if message.from_user.id != MY_ID: return
