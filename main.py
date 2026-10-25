@@ -163,7 +163,8 @@ weekdays = ["Понедельник", "Вторник", "Среда", "Четв�
 weekday = weekdays[now.weekday()]
 
 # Проверяем, выходной ли это
-is_weekend = "Да (выходной)" if now.weekday() >= 5 else "Нет (учебный день)"
+is_weekend = "Да (выходной)"
+if now.weekday() >= 5 else "Нет (учебный день)"
 
 system_content += f"\n\nВАЖНАЯ ИНФОРМАЦИЯ: Сейчас {time_str} ({time_of_day}) по Москве. Сегодня {weekday}. Выходной: {is_weekend}. Учитывай это в общении."
 
