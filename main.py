@@ -323,39 +323,11 @@ def generate_image(message):
         if response.status_code == 200:
             bot.send_photo(message.chat.id, response.content, caption=f"Вот: {prompt}")
         else:
-            bot.reply_to(message, "Не получилось нарисовать.")
+            # Если ошибка - выводим её код
+            bot.reply_to(message, f"Генератор выдал ошибку: {response.status_code}. Попробуй позже или упрости запрос.")
     except Exception as e:
-        bot.reply_to(message, f"Ошибка: {e}")
-
-@bot.message_handler(func=lambda message: message.text and ("youtube.com" in message.text or "youtu.be" in message.text))
-def handle_youtube(message):
-    if message.from_user.id != MY_ID: return
-    bot.send_chat_action(message.chat.id, 'typing')
-    url = message.text.strip()
-    try:
-        if "youtu.be/" in url:
-            video_id = url.split("youtu.be/")[1].split("?")[0]
-        elif "v=" in url:
-            video_id = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)['v'][0]
-        else:
-            bot.reply_to(message, "Не могу распознать ссылку.")
-            return
-
-        try:
-            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-            try: transcript = transcript_list.find_transcript(['ru'])
-            except: transcript = transcript_list.find_transcript(['en'])
-            transcript_data = transcript.fetch()
-            full_text = " ".join([t['text'] for t in transcript_data])
-            clean_text = full_text[:3000]
-            
-            prompt = f"Я скинул тебе ссылку на YouTube. Вот текст из этого видео: '{clean_text}'. Прочитай его и перескажи мне в 3-4 предложениях, о чем это видео."
-            reply = get_ai_response(prompt, [])
-            bot.reply_to(message, reply)
-        except Exception:
-            bot.reply_to(message, "У этого видео нет доступных субтитров.")
-    except Exception as e:
-        print(f"Ошибка YouTube: {e}")
+        # Если таймаут или другая проблема
+        bot.reply_to(message, f"Ошибка при запросе: {e}")
 
 @bot.message_handler(content_types=['voice'])
 def handle_voice(message):
