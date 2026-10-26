@@ -232,7 +232,7 @@ def send_multiple_messages(chat_id, message, text):
     if len(text) < 100:
         bot.send_chat_action(chat_id, 'typing')
         time.sleep(min(len(text) * 0.06, 3.0))
-        bot.reply_to(message, text)
+        bot.send_message(chat_id, text) # <-- Заменили reply_to на send_message
         return
 
     # Иначе разбиваем на 2 части
@@ -246,7 +246,7 @@ def send_multiple_messages(chat_id, message, text):
         time.sleep(typing_time)
             
         if i == 0:
-            bot.reply_to(message, sentence)
+            bot.send_message(chat_id, sentence) # <-- И здесь тоже
         else:
             time.sleep(random.uniform(2.0, 4.0)) 
             bot.send_message(chat_id, sentence)
