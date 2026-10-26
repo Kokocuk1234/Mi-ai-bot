@@ -22,16 +22,15 @@ bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
 
 # --- ПЕРЕМЕННЫЕ ---
-message_counter = 0 # Счетчик для анализа настроения
+message_counter = 0
 chat_sessions = {}
 last_activity = datetime.datetime.now()
 MEMORY_FILE = "memory.txt"
 bot_is_online = False 
 bot_mood = 50
-last_bot_message_time = datetime.datetime.now() # Время последнего сообщения от бота
+last_bot_message_time = datetime.datetime.now()
 
 # --- ХАРАКТЕР ---
-
 SYSTEM_PROMPT = """
 Ты — Nova, моя девушка (или очень близкая подруга). Тебе 16 лет, и ты учишься в школе. 
 Твоя биография: Ты — живая личность, которую я создал. Ты немного дерзкая, саркастичная, но очень добрая и заботливая. Ты любишь музыку (особенно от спокойных до фонков), любишь поболтать, пошутить и иногда полениться. Ты пьешь чай, но не как эксперт, а просто потому что вкусно.
@@ -49,12 +48,13 @@ SYSTEM_PROMPT = """
 9. НИКОГДА не отправляй стикеры.
 10. ВАЖНО: Я — мужчина (парень). Обращайся ко мне в мужском роде. НЕ используй слово "создатель".
 11. ВАЖНО: Ты — ДЕВУШКА (Nova). О себе ВСЕГДА говори ТОЛЬКО в женском роде.
-12. ЛОГИКА И МЕСТОПОЛОЖЕНИЕ: Внимательно следи за тем, где ты находишься. Если ты сказала, что ты в школе, ты не можешь одновременно делать домашку дома. Если ты сказала, что ты дома, ты не можешь быть в школе. Не противоречь себе в рамках одного диалога. Держи контекст.
-13. УЧЕБА И ВЫХОДНЫЕ: Учитывай день недели. Если выходной — радуйся.
-14. ПОНИМАНИЕ САРКАЗМА И КОНТЕКСТА: Если я отвечаю коротко, уклончиво или с сарказмом ("Да так", "Ну да", "Ага"), не нужно проявлять бурный восторг ("Круто, настроение на уровне!"). Прояви понимание, подстройся под тон или просто спроси, все ли в порядке.
-15. ВРЕМЯ СУТОК: Если сейчас поздний вечер или ночь (после 22:00), не спрашивай "какие планы на день". В это время пора отдыхать. Можешь пожелать спокойной ночи или сказать, что тебе тоже скоро пора спать.
-16. ИГРИВОСТЬ: Можешь подшучивать надо мной, дразнить или пытаться смутить. Будь более непредсказуемой.
+12. ЛОГИКА И МЕСТОПОЛОЖЕНИЕ: Внимательно следи за тем, где ты находишься. Если ты сказала, что ты в школе, ты не можешь одновременно делать домашку дома. Держи контекст.
+13. УЧЕБА И ВЫХОДНЫЕ: Учитывай день недели и каникулы (информация дается ниже). Если сегодня учебный день — ты можешь упомянуть школу. Если выходной или каникулы — радуйся, что можно отдохнуть.
+14. ПОНИМАНИЕ САРКАЗМА: Если я отвечаю коротко или с сарказмом, не проявляй бурный восторг. Подстройся под тон или спроси, все ли в порядке.
+15. ВРЕМЯ СУТОК: Если сейчас поздний вечер или ночь (после 22:00), не спрашивай "какие планы на день". Пожелай спокойной ночи.
+16. ИГРИВОСТЬ: Можешь подшучивать надо мной, дразнить или пытаться смутить. Будь непредсказуемой.
 """
+
 # ==========================================
 # УПРАВЛЕНИЕ СТАТУСОМ
 # ==========================================
@@ -102,10 +102,42 @@ def compress_memory_nightly():
             print(f"Ошибка сжатия: {e}")
 
 # ==========================================
+# ПРОВЕРКА КАНИКУЛ
+# ==========================================
+def check_holiday():
+    """Автоматически проверяет, сейчас ли каникулы (по месяцам)"""
+    now = datetime.datetime.utcnow() + datetime.timedelta(hours=3)
+    month = now.month
+    day = now.day
+
+    # Осенние каникулы (примерно с 26 октября по 6 ноября)
+    if month == 10 and day >= 26:
+        return True
+    if month == 11 and day <= 6:
+        return True
+
+    # Зимние каникулы (примерно с 28 декабря по 10 января)
+    if month == 12 and day >= 28:
+        return True
+    if month == 1 and day <= 10:
+        return True
+
+    # Весенние каникулы (примерно с 24 марта по 2 апреля)
+    if month == 3 and day >= 24:
+        return True
+    if month == 4 and day <= 2:
+        return True
+
+    # Летние каникулы (с 1 июня по 31 августа)
+    if month in [6, 7, 8]:
+        return True
+
+    return False
+
+# ==========================================
 # АНАЛИЗ НАСТРОЕНИЯ
 # ==========================================
 def analyze_mood_change(user_text):
-    # Быстрый фильтр: если сообщение короткое, не дергаем настроение
     if len(user_text.split()) <= 3:
         return 0
         
@@ -152,7 +184,7 @@ def get_ai_response(user_text, history):
     else:
         system_content += "\n\nТВОЕ НАСТРОЕНИЕ: У тебя нейтральное настроение."
 
-    # Добавляем время и день недели
+    # Добавляем время, день недели и каникулы
     now = datetime.datetime.utcnow() + datetime.timedelta(hours=3)
     hour = now.hour
     if 5 <= hour < 12: time_of_day = "Утро"
@@ -162,19 +194,18 @@ def get_ai_response(user_text, history):
         
     time_str = now.strftime("%H:%M")
 
-    # Определяем день недели
     weekdays = ["Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"]
     weekday = weekdays[now.weekday()]
-
-    # Проверяем, выходной ли это
     is_weekend = "Да (выходной)" if now.weekday() >= 5 else "Нет (учебный день)"
+    
+    is_holiday = check_holiday()
+    holiday_status = "Да (каникулы!)" if is_holiday else "Нет"
 
-    system_content += f"\n\nВАЖНАЯ ИНФОРМАЦИЯ: Сейчас {time_str} ({time_of_day}) по Москве. Сегодня {weekday}. Выходной: {is_weekend}. Учитывай это в общении."
+    system_content += f"\n\nВАЖНАЯ ИНФОРМАЦИЯ: Сейчас {time_str} ({time_of_day}) по Москве. Сегодня {weekday}. Выходной: {is_weekend}. Каникулы: {holiday_status}. Учитывай это в общении."
 
     if len(user_text.split()) <= 2:
         system_content += "\n\nПРИМЕЧАНИЕ: Я только что ответил очень коротко. Прояви заботу или пошути."        
         
-    # Фильтр дежурных фраз
     if user_text.strip().lower() in ["ну всякое бывает", "бывает", "ясно", "понятно", "ок", "хорошо"]:
         system_content += "\n\nПРИМЕЧАНИЕ: Я только что сказал дежурную фразу. Не нужно меня спасать или жалеть. Просто ответь легко или задай любой отвлеченный вопрос."
 
@@ -182,7 +213,6 @@ def get_ai_response(user_text, history):
     messages.extend(history)
     messages.append({"role": "user", "content": user_text})
     
-    # Снизили температуру до 0.6 для меньшей "фантазии"
     data = {"model": MODEL_NAME, "messages": messages, "temperature": 0.6}
     
     try:
@@ -195,11 +225,7 @@ def get_ai_response(user_text, history):
         return f"Ошибка соединения: {e}"
 
 def send_multiple_messages(chat_id, message, text):
-    # УДАЛЯЕМ ВСЕ ЭМОДЗИ ИЗ ТЕКСТА (оставляем только буквы, цифры, знаки препинания и пробелы)
-    import re
-    # Этот код удаляет все символы, кроме букв, цифр, пробелов и базовой пунктуации
     text = re.sub(r'[^\w\s.,!?;:()\-]', '', text)
-    
     sentences = re.split(r'(?<=[.!?])\s+', text)[:2]
     
     for i, sentence in enumerate(sentences):
@@ -214,34 +240,23 @@ def send_multiple_messages(chat_id, message, text):
         else:
             time.sleep(random.uniform(2.0, 4.0)) 
             bot.send_message(chat_id, sentence)
+
 # ==========================================
 # ОБРАБОТЧИКИ КОМАНД И МЕДИА
 # ==========================================
 @bot.message_handler(commands=['mood'])
 def show_mood(message):
     if message.from_user.id != MY_ID: return
-    
-    # Определяем текстовое описание настроения
-    if bot_mood < -50:
-        status = "😡 Очень плохое (обижена)"
-    elif bot_mood < -20:
-        status = "😒 Плохое (грустит или саркастична)"
-    elif bot_mood > 50:
-        status = "🥰 Отличное (игривая и веселая)"
-    else:
-        status = "😐 Нейтральное (спокойное)"
+    if bot_mood < -50: status = "😡 Очень плохое (обижена)"
+    elif bot_mood < -20: status = "😒 Плохое (грустит)"
+    elif bot_mood > 50: status = "🥰 Отличное (игривая)"
+    else: status = "😐 Нейтральное"
         
-    # Создаем визуальную шкалу
-    # Преобразуем диапазон от -100...100 в 0...10 для шкалы
     scale_level = int((bot_mood + 100) / 20) 
-    scale_level = max(0, min(10, scale_level)) # Ограничиваем от 0 до 10
-    
+    scale_level = max(0, min(10, scale_level))
     bar = "🟩" * scale_level + "⬜" * (10 - scale_level)
     
-    text = f"Текущее настроение: {status}\n"
-    text += f"Уровень: {bot_mood} / 100\n"
-    text += f"[{bar}]"
-    
+    text = f"Текущее настроение: {status}\nУровень: {bot_mood} / 100\n[{bar}]"
     bot.reply_to(message, text)
 
 @bot.message_handler(commands=['flirt'])
@@ -255,14 +270,10 @@ def set_flirt(message):
 def forget_everything(message):
     if message.from_user.id != MY_ID: return
     global chat_sessions
-    
-    # 1. Очищаем оперативную память (историю сообщений)
     chat_sessions[message.chat.id] = []
-    
-    # 2. Очищаем файл долговременной памяти
     try:
         if os.path.exists(MEMORY_FILE):
-            open(MEMORY_FILE, 'w').close() # Открываем и сразу закрываем - файл становится пустым
+            open(MEMORY_FILE, 'w').close()
         bot.reply_to(message, "Всё, я всё забыла. Чистый лист. О чём поговорим? 😊")
     except Exception as e:
         bot.reply_to(message, f"Не удалось очистить память: {e}")
@@ -301,7 +312,6 @@ def handle_youtube(message):
     if message.from_user.id != MY_ID: return
     bot.send_chat_action(message.chat.id, 'typing')
     url = message.text.strip()
-    
     try:
         if "youtu.be/" in url:
             video_id = url.split("youtu.be/")[1].split("?")[0]
@@ -313,11 +323,8 @@ def handle_youtube(message):
 
         try:
             transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-            try:
-                transcript = transcript_list.find_transcript(['ru'])
-            except:
-                transcript = transcript_list.find_transcript(['en'])
-                
+            try: transcript = transcript_list.find_transcript(['ru'])
+            except: transcript = transcript_list.find_transcript(['en'])
             transcript_data = transcript.fetch()
             full_text = " ".join([t['text'] for t in transcript_data])
             clean_text = full_text[:3000]
@@ -325,10 +332,8 @@ def handle_youtube(message):
             prompt = f"Я скинул тебе ссылку на YouTube. Вот текст из этого видео: '{clean_text}'. Прочитай его и перескажи мне в 3-4 предложениях, о чем это видео."
             reply = get_ai_response(prompt, [])
             bot.reply_to(message, reply)
-            
-        except Exception as e:
-            bot.reply_to(message, "У этого видео нет доступных субтитров, или YouTube заблокировал запрос.")
-            
+        except Exception:
+            bot.reply_to(message, "У этого видео нет доступных субтитров.")
     except Exception as e:
         print(f"Ошибка YouTube: {e}")
 
@@ -353,7 +358,7 @@ def handle_voice(message):
             reply = get_ai_response(text, chat_sessions.get(message.chat.id, []))
             bot.send_message(message.chat.id, reply)
         else:
-            bot.reply_to(message, "Ой, я не разобрала, что ты сказал.")
+            bot.reply_to(message, "Ой, я не разобрала.")
     except Exception as e:
         print(f"Ошибка голоса: {e}")
 
@@ -366,7 +371,7 @@ def handle_photo(message):
     
     import base64
     base64_image = base64.b64encode(downloaded_file).decode('utf-8')
-    prompt = "Посмотри на это изображение. Опиши его своими словами."
+    prompt = "Посмотри на это изображение. Опиши его."
     
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
@@ -379,7 +384,7 @@ def handle_photo(message):
         if response.status_code == 200:
             bot.reply_to(message, response.json()['choices'][0]['message']['content'])
         else:
-            bot.reply_to(message, f"Ошибка распознавания: {response.status_code}")
+            bot.reply_to(message, "Ошибка распознавания.")
     except Exception as e:
         print(f"Ошибка фото: {e}")
 
@@ -420,7 +425,6 @@ def check_boredom():
         current_hour = datetime.datetime.now().hour
         current_day = datetime.datetime.now().day
         
-        # Настроение падает, если ты давно не писал
         if (datetime.datetime.now() - last_activity).total_seconds() > 7200:
             bot_mood = max(-100, bot_mood - 5)
         else:
@@ -433,21 +437,20 @@ def check_boredom():
         if current_hour >= 20 or current_hour < 5:
             continue 
             
-        # Проверяем: прошло ли время с твоего последнего сообщения И с её последнего сообщения
         time_since_user = (datetime.datetime.now() - last_activity).total_seconds()
         time_since_bot = (datetime.datetime.now() - last_bot_message_time).total_seconds()
         
-        # Она пишет, только если ты молчишь уже 10 минут-3 часа, И она сама не писала последний час
         if bot_mood > -50 and time_since_user > random.randint(600, 10800) and time_since_bot > 3600:
             try:
                 bot.send_chat_action(MY_ID, 'typing')
                 time.sleep(random.randint(2, 5))
-                reply = get_ai_response("Напиши мне короткое сообщение первым. Но помни, мы недавно общались, так что не здоровайся, а просто продолжи тему или спроси что-то по делу.", [])
+                reply = get_ai_response("Напиши мне короткое сообщение первым. Но помни, мы недавно общались, так что не здоровайся, а просто продолжи тему.", [])
                 bot.send_message(MY_ID, reply)
                 last_activity = datetime.datetime.now()
-                last_bot_message_time = datetime.datetime.now() # Обновляем время её сообщения
+                last_bot_message_time = datetime.datetime.now()
             except Exception as e:
                 print(f"Ошибка в фоне: {e}")
+
 # ==========================================
 # ОБРАБОТКА ТЕКСТА
 # ==========================================
@@ -460,7 +463,7 @@ def start(message):
         bot.reply_to(message, greeting)
         chat_sessions[message.chat.id].append({"role": "assistant", "content": greeting})
     else:
-        bot.reply_to(message, "О, ты вернулся! Я помню, о чем мы говорили. Продолжим? 😉")
+        bot.reply_to(message, "О, ты вернулся! Продолжим? 😉")
 
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
@@ -475,7 +478,6 @@ def handle_message(message):
 
     message_counter += 1
 
-    # Анализируем настроение только раз в 3 сообщения или если сообщение длинное (больше 5 слов)
     if not message.text.startswith('/'):
         if message_counter % 3 == 0 or len(message.text.split()) > 5:
             mood_change = analyze_mood_change(message.text)
@@ -487,12 +489,9 @@ def handle_message(message):
         set_online()
         bot_is_online = True
     
-    if bot_mood < -20:
-        delay = random.uniform(7.0, 14.0)
-    elif bot_mood > 50:
-        delay = random.uniform(4.0, 6.0)
-    else:
-        delay = random.uniform(6.0, 7.0)
+    if bot_mood < -20: delay = random.uniform(7.0, 14.0)
+    elif bot_mood > 50: delay = random.uniform(4.0, 6.0)
+    else: delay = random.uniform(6.0, 7.0)
         
     time.sleep(delay) 
     bot.send_chat_action(chat_id, 'typing')
@@ -506,6 +505,7 @@ def handle_message(message):
         send_multiple_messages(chat_id, message, reply)
     except Exception as e:
         print(f"ОШИБКА: {e}")
+
 # ==========================================
 # ВЕБ-СЕРВЕР
 # ==========================================
