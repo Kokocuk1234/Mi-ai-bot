@@ -217,6 +217,33 @@ def send_multiple_messages(chat_id, message, text):
 # ==========================================
 # ОБРАБОТЧИКИ КОМАНД И МЕДИА
 # ==========================================
+@bot.message_handler(commands=['mood'])
+def show_mood(message):
+    if message.from_user.id != MY_ID: return
+    
+    # Определяем текстовое описание настроения
+    if bot_mood < -50:
+        status = "😡 Очень плохое (обижена)"
+    elif bot_mood < -20:
+        status = "😒 Плохое (грустит или саркастична)"
+    elif bot_mood > 50:
+        status = "🥰 Отличное (игривая и веселая)"
+    else:
+        status = "😐 Нейтральное (спокойное)"
+        
+    # Создаем визуальную шкалу
+    # Преобразуем диапазон от -100...100 в 0...10 для шкалы
+    scale_level = int((bot_mood + 100) / 20) 
+    scale_level = max(0, min(10, scale_level)) # Ограничиваем от 0 до 10
+    
+    bar = "🟩" * scale_level + "⬜" * (10 - scale_level)
+    
+    text = f"Текущее настроение: {status}\n"
+    text += f"Уровень: {bot_mood} / 100\n"
+    text += f"[{bar}]"
+    
+    bot.reply_to(message, text)
+
 @bot.message_handler(commands=['flirt'])
 def set_flirt(message):
     global bot_mood
