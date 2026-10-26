@@ -228,17 +228,27 @@ def get_ai_response(user_text, history):
 def send_multiple_messages(chat_id, message, text):
     text = re.sub(r'[^\w\s.,!?;:()\-]', '', text)
     
-    # Если текст короткий (меньше 100 символов), отправляем одним сообщением
-    if len(text) < 100:
-        bot.send_chat_action(chat_id, 'typing')
-        time.sleep(min(len(text) * 0.06, 3.0))
-        bot.send_message(chat_id, text) # <-- Заменили reply_to на send_message
-        return
-
-    # Иначе разбиваем на 2 части
-    sentences = re.split(r'(?<=[.!?])\s+', text)[:2]
+    # Разбиваем на предложения
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    
+    # Если предложение одно, но оно длинное, или если выпал шанс (30%) разбить его
+    if len(sentences) == 1:
+        if len(text) > 100 or random.random() < 0.3:
+            # Разбиваем длинное предложение по запятым или пробелам
+            words = text.split()
+            if len(words) > 5:
+                mid = len(words) // 2
+                sentences = [" ".join(words[:mid]), " ".join(words[mid:])]
+            else:
+                sentences = [text]
+        else:
+            sentences = [text]
+    else:
+        # Если предложений несколько, берем максимум 2
+        sentences = sentences[:2]
     
     for i, sentence in enumerate(sentences):
+        if not sentence.strip(): continue
         if not re.search('[a-zA-Zа-яА-Я]', sentence): continue 
         
         bot.send_chat_action(chat_id, 'typing')
@@ -246,9 +256,10 @@ def send_multiple_messages(chat_id, message, text):
         time.sleep(typing_time)
             
         if i == 0:
-            bot.send_message(chat_id, sentence) # <-- И здесь тоже
+            bot.send_message(chat_id, sentence)
         else:
-            time.sleep(random.uniform(2.0, 4.0)) 
+            # Пауза перед вторым сообщением, чтобы казалось, что она печатает вдогонку
+            time.sleep(random.uniform(1.5, 3.0)) 
             bot.send_message(chat_id, sentence)
 # ==========================================
 # ОБРАБОТЧИКИ КОМАНД И МЕДИА
