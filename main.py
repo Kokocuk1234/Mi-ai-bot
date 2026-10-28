@@ -168,13 +168,20 @@ def analyze_mood_change(user_text):
 # ГЛАВНАЯ ФУНКЦИЯ ОТВЕТА
 # ==========================================
 def get_ai_response(user_text, history):
-    global bot_mood
+    global bot_mood, is_roleplay_mode # <-- Добавь is_roleplay_mode в global
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     
     memory = load_memory()
     system_content = SYSTEM_PROMPT
-    
+
+    # === ВСТАВЬ ЭТОТ БЛОК СЮДА ===
+    if is_roleplay_mode:
+        system_content += "\n\nРЕЖИМ РОЛЕВОЙ ИГРЫ АКТИВЕН: Ты сейчас не просто бот, а персонаж книги. Описывай свои действия в звездочках (*улыбается*, *берет тебя за руку*). Описывай обстановку и свои эмоции подробно. Не выходи из роли."
+    else:
+        system_content += "\n\nРЕЖИМ ОБЫЧНОГО ЧАТА: Общайся как в мессенджере, коротко."
+    # ===============================
+
     if memory:
         system_content += f"\n\nВот что ты помнишь обо мне из прошлого:\n{memory}"
 
@@ -380,6 +387,21 @@ def handle_photo(message):
     except Exception as e:
         print(f"Ошибка фото: {e}")
 
+# Глобальная переменная для режима RPG
+is_roleplay_mode = False
+
+@bot.message_handler(commands=['roleplay'])
+def toggle_roleplay(message):
+    global is_roleplay_mode
+    if message.from_user.id != MY_ID: return
+    
+    is_roleplay_mode = not is_roleplay_mode
+    
+    if is_roleplay_mode:
+        bot.reply_to(message, "🎭 Режим Ролевой Игры включен! Теперь я буду описывать свои действия и эмоции. Попробуй начать сцену (например: *Мы сидим в кафе*).")
+    else:
+        bot.reply_to(message, "📱 Режим Ролевой Игры выключен. Возвращаемся в обычный чат.")
+
 @bot.message_handler(commands=['meme'])
 def send_meme(message):
     if message.from_user.id != MY_ID: return
@@ -492,7 +514,7 @@ def handle_message(message):
         reply = get_ai_response(message.text, chat_sessions[chat_id])
         chat_sessions[chat_id].append({"role": "user", "content": message.text})
         chat_sessions[chat_id].append({"role": "assistant", "content": reply})
-        chat_sessions[chat_id] = chat_sessions[chat_id][-150:]
+        chat_sessions[chat_id] = chat_sessions[chat_id][-300:]
         
         send_multiple_messages(chat_id, message, reply)
     except Exception as e:
