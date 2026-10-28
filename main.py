@@ -22,6 +22,7 @@ bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
 
 # --- ПЕРЕМЕННЫЕ ---
+is_roleplay_mode = False
 message_counter = 0
 chat_sessions = {}
 last_activity = datetime.datetime.now()
