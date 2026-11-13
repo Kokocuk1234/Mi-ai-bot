@@ -2,9 +2,13 @@ services:
   - type: web
     name: nova-bot
     runtime: python
+    # На free-плане нет постоянного диска: память и история сотрутся при рестарте.
+    # Для сохранности переключись на платный план и раскомментируй блок disk ниже.
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: python bot.py
+    # Один воркер обязателен: состояние бота хранится в памяти процесса
+    startCommand: gunicorn main:app --workers 1 --threads 4 --timeout 120 --bind 0.0.0.0:$PORT
+    healthCheckPath: /ping
     envVars:
       - key: TELEGRAM_TOKEN
         sync: false
@@ -14,9 +18,13 @@ services:
         sync: false
       - key: RENDER_URL
         sync: false
+      - key: WEBHOOK_SECRET
+        generateValue: true
       - key: MODEL_NAME
         value: openai/gpt-oss-120b
-    disk:
-      name: nova-data
-      mountPath: /opt/render/project/src/data
-      sizeGB: 1
+      - key: DATA_DIR
+        value: /opt/render/project/src/data
+    # disk:
+    #   name: nova-data
+    #   mountPath: /opt/render/project/src/data
+    #   sizeGB: 1
