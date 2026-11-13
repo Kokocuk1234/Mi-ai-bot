@@ -107,6 +107,22 @@ def split_messages(text: str, roleplay: bool = False, max_parts: int = 3) -> lis
     return parts
 
 
+EMOJI_RE = re.compile(
+    "[\U0001F000-\U0001FAFF☀-➿⭐⭕️‍]+"
+)
+
+
+def limit_emoji(text: str, keep_chance: float = 0.2) -> str:
+    """В большинстве ответов убирает все эмодзи, иногда оставляет одно."""
+    found = EMOJI_RE.findall(text)
+    if not found:
+        return text
+    keep = found[0] if random.random() < keep_chance else ""
+    text = EMOJI_RE.sub("", text)
+    text = re.sub(r"[ \t]{2,}", " ", text).strip()
+    return f"{text} {keep}".strip() if keep else text
+
+
 def typing_delay(text: str) -> float:
     """Сколько «печатает» сообщение."""
     return min(len(text) * 0.05, 3.0) + random.uniform(0.3, 0.9)
