@@ -18,7 +18,7 @@ from config import (
     FACTS_EVERY_N_MESSAGES, QUIET_FROM_HOUR, QUIET_TO_HOUR,
     MAX_UNANSWERED_INITIATIVES, STICKER_IDS,
 )
-from utils import now_msk, split_messages, typing_delay, is_school_time
+from utils import now_msk, split_messages, typing_delay, is_school_time, limit_emoji
 from memory import (
     load_memory, save_memory, clear_memory, save_daily_facts,
     load_history, save_history,
@@ -50,6 +50,10 @@ state = {
     "unanswered_initiatives": 0,
     "initiative_after": random.randint(3600, 10800),
 }
+# Чистим эмодзи в старой истории, чтобы модель не подражала самой себе
+for _m in state["history"]:
+    if _m["role"] == "assistant":
+        _m["content"] = limit_emoji(_m["content"], keep_chance=0)
 seen_ids = deque(maxlen=300)      # защита от повторной доставки вебхука
 
 PHRASES_FAIL = ["сек, у меня что-то глючит", "ой, интернет завис, напиши ещё раз чуть позже", "эм, я зависла. повтори?"]
@@ -209,6 +213,9 @@ def process_user_input(chat_id: int, texts: list[str], msg_id: int):
         # Ошибку в историю не пишем, отвечаем в образе
         bot.send_message(chat_id, random.choice(PHRASES_FAIL))
         return
+
+    if not roleplay:
+        reply = limit_emoji(reply)
 
     # Задержка считается с момента получения, а не после генерации
     remaining = compute_delay() - (time.time() - started)
@@ -483,6 +490,8 @@ def background_loop():
                 )
                 if not reply:
                     continue
+                if not roleplay:
+                    reply = limit_emoji(reply)
                 add_history("assistant", reply)
                 send_parts(MY_ID, split_messages(reply, roleplay=roleplay))
 
