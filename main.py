@@ -4,356 +4,546 @@ import random
 import base64
 import threading
 import datetime
+from collections import deque
+from urllib.parse import quote
 
+import requests
 import telebot
+from telebot.types import ReactionTypeEmoji
 from flask import Flask, request
 
-from config import TELEGRAM_TOKEN, MY_ID, RENDER_URL
-from utils import split_messages
-from memory import load_memory, save_memory, clear_memory, save_daily_facts
-from ai import get_ai_response, analyze_mood_change, compress_memory_nightly, describe_image
+from config import (
+    TELEGRAM_TOKEN, MY_ID, RENDER_URL, WEBHOOK_SECRET, SYSTEM_PROMPT,
+    DEBOUNCE_SECONDS, HISTORY_STORED, HISTORY_TAIL_AFTER_NIGHT,
+    FACTS_EVERY_N_MESSAGES, QUIET_FROM_HOUR, QUIET_TO_HOUR,
+    MAX_UNANSWERED_INITIATIVES, STICKER_IDS,
+)
+from utils import now_msk, split_messages, typing_delay, is_school_time
+from memory import (
+    load_memory, save_memory, clear_memory, save_daily_facts,
+    load_history, save_history,
+)
+from ai import (
+    get_ai_response, analyze_mood_change, compress_memory_nightly,
+    extract_facts, describe_image, transcribe_audio, quick_ask,
+)
 
-bot = telebot.TeleBot(TELEGRAM_TOKEN)
+bot = telebot.TeleBot(TELEGRAM_TOKEN or "0:placeholder", threaded=False)
 app = Flask(__name__)
 
 # ==========================================
-# ГЛОБАЛЬНОЕ СОСТОЯНИЕ
+# ГЛОБАЛЬНОЕ СОСТОЯНИЕ (один пользователь)
 # ==========================================
+lock = threading.RLock()          # защищает state
+reply_lock = threading.Lock()     # один ответ за раз
+
 state = {
     "roleplay": False,
     "mood": 50,
     "message_counter": 0,
-    "last_activity": datetime.datetime.now(),
-    "last_bot_message_time": datetime.datetime.now(),
-    "sessions": {},       # chat_id -> list[msg]
-    "lock": threading.Lock(),
+    "last_activity": now_msk(),
+    "last_bot_message_time": now_msk(),
+    "history": load_history(),    # [{"role":..., "content":...}]
+    "pending": [],                # накопленные сообщения для дебаунса
+    "pending_msg_id": None,
+    "timer": None,
+    "unanswered_initiatives": 0,
+    "initiative_after": random.randint(3600, 10800),
 }
+seen_ids = deque(maxlen=300)      # защита от повторной доставки вебхука
+
+PHRASES_FAIL = ["сек, у меня что-то глючит", "ой, интернет завис, напиши ещё раз чуть позже", "эм, я зависла. повтори?"]
+ACK_SHORT = {"ок", "окей", "ясно", "понятно", "ладно", "хорошо", "ага", "угу", "бывает"}
+
+
+def owner_only(func):
+    def wrapper(message):
+        if message.from_user.id != MY_ID:
+            return
+        return func(message)
+    wrapper.__name__ = func.__name__
+    return wrapper
+
+
+def add_history(role: str, content: str):
+    with lock:
+        state["history"].append({"role": role, "content": content})
+        state["history"] = state["history"][-HISTORY_STORED:]
+        snapshot = list(state["history"])
+    save_history(snapshot)
+
+
+def touch_activity():
+    with lock:
+        state["last_activity"] = now_msk()
+        state["unanswered_initiatives"] = 0
+        state["initiative_after"] = random.randint(3600, 10800)
+
 
 # ==========================================
-# ОТПРАВКА С ЗАДЕРЖКОЙ (без блокировки Flask)
+# ПОВЕДЕНИЕ: реакции, задержки, отправка
 # ==========================================
-def send_typing_then_messages(chat_id: int, sentences: list[str], base_delay: float):
-    """Шлёт сообщения в отдельном потоке, не блокирует вебхук."""
-    def _worker():
-        time.sleep(base_delay)
-        for i, sentence in enumerate(sentences):
-            if not sentence.strip():
-                continue
-            try:
-                bot.send_chat_action(chat_id, 'typing')
-                time.sleep(min(len(sentence) * 0.06, 3.5))
-                bot.send_message(chat_id, sentence)
-                if i < len(sentences) - 1:
-                    time.sleep(random.uniform(1.5, 3.0))
-            except Exception as e:
-                print(f"Ошибка отправки: {e}")
-    threading.Thread(target=_worker, daemon=True).start()
+def maybe_react(chat_id: int, msg_id: int, force: bool = False) -> bool:
+    mood = state["mood"]
+    if not force and random.random() > 0.15:
+        return False
+    if mood > 50:
+        pool = ["❤", "🥰", "🔥", "😍"]
+    elif mood < -20:
+        pool = ["🤨", "😐"]
+    else:
+        pool = ["😁", "👀", "🤣", "❤"]
+    try:
+        bot.set_message_reaction(chat_id, msg_id, [ReactionTypeEmoji(random.choice(pool))])
+        return True
+    except Exception as e:
+        print(f"Реакция не поставилась: {e}")
+        return False
+
+
+def compute_delay() -> float:
+    mood = state["mood"]
+    if mood < -20:
+        delay = random.uniform(6.0, 12.0)
+    elif mood > 50:
+        delay = random.uniform(2.0, 4.5)
+    else:
+        delay = random.uniform(3.0, 6.0)
+    if is_school_time() and random.random() < 0.5:
+        delay += random.uniform(8.0, 30.0)   # на уроке отвечает не сразу
+    return delay
+
+
+def send_parts(chat_id: int, parts: list[str]):
+    for i, part in enumerate(parts):
+        if not part.strip():
+            continue
+        try:
+            bot.send_chat_action(chat_id, "typing")
+            time.sleep(typing_delay(part))
+            bot.send_message(chat_id, part)
+            with lock:
+                state["last_bot_message_time"] = now_msk()
+            if i < len(parts) - 1:
+                time.sleep(random.uniform(0.8, 2.0))
+        except Exception as e:
+            print(f"Ошибка отправки: {e}")
+
+    if STICKER_IDS and state["mood"] > 30 and random.random() < 0.08:
+        try:
+            time.sleep(random.uniform(1.0, 2.0))
+            bot.send_sticker(chat_id, random.choice(STICKER_IDS))
+        except Exception as e:
+            print(f"Ошибка стикера: {e}")
+
+
+# ==========================================
+# ДЕБАУНС: несколько сообщений подряд → один ответ
+# ==========================================
+def enqueue(text: str, message):
+    """Копит сообщения и запускает ответ через DEBOUNCE_SECONDS тишины."""
+    if message.message_id in seen_ids:
+        return
+    seen_ids.append(message.message_id)
+
+    touch_activity()
+    with lock:
+        state["pending"].append(text)
+        state["pending_msg_id"] = message.message_id
+        if state["timer"]:
+            state["timer"].cancel()
+        t = threading.Timer(DEBOUNCE_SECONDS, flush_pending, args=(message.chat.id,))
+        t.daemon = True
+        state["timer"] = t
+        t.start()
+
+
+def flush_pending(chat_id: int):
+    with lock:
+        texts = state["pending"]
+        msg_id = state["pending_msg_id"]
+        state["pending"] = []
+        state["timer"] = None
+    if not texts:
+        return
+    with reply_lock:
+        try:
+            process_user_input(chat_id, texts, msg_id)
+        except Exception as e:
+            print(f"ОШИБКА process_user_input: {e}")
+
+
+def update_mood(user_text: str):
+    with lock:
+        state["message_counter"] += 1
+        counter = state["message_counter"]
+    if counter % 3 == 0 or len(user_text.split()) > 5:
+        delta = analyze_mood_change(user_text)
+        with lock:
+            state["mood"] = max(-100, min(100, state["mood"] + delta))
+
+
+def process_user_input(chat_id: int, texts: list[str], msg_id: int):
+    user_text = "\n".join(texts)
+    started = time.time()
+
+    update_mood(user_text)
+
+    # Иногда на короткое «ок» достаточно реакции без текста
+    if (len(texts) == 1 and user_text.strip().lower() in ACK_SHORT
+            and not state["roleplay"] and random.random() < 0.4):
+        if maybe_react(chat_id, msg_id, force=True):
+            add_history("user", user_text)
+            return
+
+    maybe_react(chat_id, msg_id)
+
+    with lock:
+        history = list(state["history"])
+        roleplay = state["roleplay"]
+        mood = state["mood"]
+
+    reply = get_ai_response(user_text, history, roleplay, mood)
+
+    if not reply:
+        # Ошибку в историю не пишем, отвечаем в образе
+        bot.send_message(chat_id, random.choice(PHRASES_FAIL))
+        return
+
+    # Задержка считается с момента получения, а не после генерации
+    remaining = compute_delay() - (time.time() - started)
+    if remaining > 0:
+        time.sleep(remaining)
+
+    add_history("user", user_text)
+    add_history("assistant", reply)
+
+    send_parts(chat_id, split_messages(reply, roleplay=roleplay))
+
+    # Каждые N сообщений вытаскиваем факты в долгую память
+    with lock:
+        counter = state["message_counter"]
+    if counter % FACTS_EVERY_N_MESSAGES == 0:
+        threading.Thread(target=extract_and_save_facts, daemon=True).start()
+
+
+def extract_and_save_facts():
+    with lock:
+        recent = state["history"][-FACTS_EVERY_N_MESSAGES * 2:]
+    if not recent:
+        return
+    text = "\n".join(
+        ("Я: " if m["role"] == "user" else "Nova: ") + m["content"] for m in recent
+    )
+    facts = extract_facts(text)
+    if facts.strip():
+        save_daily_facts(facts)
+
 
 # ==========================================
 # КОМАНДЫ
 # ==========================================
-@bot.message_handler(commands=['start'])
+@bot.message_handler(commands=["start"])
+@owner_only
 def cmd_start(message):
-    if message.from_user.id != MY_ID:
-        return
     chat_id = message.chat.id
-    if chat_id not in state["sessions"] or not state["sessions"][chat_id]:
-        state["sessions"][chat_id] = []
+    with lock:
+        has_history = bool(state["history"])
+    if not has_history:
         greeting = get_ai_response("Поприветствуй меня. Спроси как дела.", [],
                                    state["roleplay"], state["mood"])
-        bot.reply_to(message, greeting)
-        state["sessions"][chat_id].append({"role": "assistant", "content": greeting})
+        if greeting:
+            bot.reply_to(message, greeting)
+            add_history("assistant", greeting)
+        else:
+            bot.reply_to(message, "привет! (у меня что-то глючит, но я тут)")
     else:
         bot.reply_to(message, "О, ты вернулся! Продолжим? 😉")
 
 
-@bot.message_handler(commands=['mood'])
+@bot.message_handler(commands=["mood"])
+@owner_only
 def cmd_mood(message):
-    if message.from_user.id != MY_ID:
-        return
     m = state["mood"]
     if m < -50:   status = "😡 Очень плохое (обижена)"
     elif m < -20: status = "😒 Плохое (грустит)"
     elif m > 50:  status = "🥰 Отличное (игривая)"
     else:         status = "😐 Нейтральное"
-
     level = max(0, min(10, int((m + 100) / 20)))
     bar = "🟩" * level + "⬜" * (10 - level)
     bot.reply_to(message, f"Текущее настроение: {status}\nУровень: {m} / 100\n[{bar}]")
 
 
-@bot.message_handler(commands=['flirt'])
+@bot.message_handler(commands=["flirt"])
+@owner_only
 def cmd_flirt(message):
-    if message.from_user.id != MY_ID:
-        return
     state["mood"] = 80
     bot.reply_to(message, "Хм, ладно. Сегодня я в настроении помурлыкать (￣ω￣)")
 
 
-@bot.message_handler(commands=['forget'])
+@bot.message_handler(commands=["forget"])
+@owner_only
 def cmd_forget(message):
-    if message.from_user.id != MY_ID:
-        return
-    state["sessions"][message.chat.id] = []
+    with lock:
+        state["history"] = []
+        state["pending"] = []
+    save_history([])
     clear_memory()
     bot.reply_to(message, "Всё, я всё забыла. Чистый лист. О чём поговорим? 😊")
 
 
-@bot.message_handler(commands=['remember', 'story'])
+@bot.message_handler(commands=["remember", "story"])
+@owner_only
 def cmd_remember(message):
-    if message.from_user.id != MY_ID:
-        return
-    parts = message.text.split(' ', 1)
-    if len(parts) < 2:
+    parts = message.text.split(" ", 1)
+    if len(parts) < 2 or not parts[1].strip():
         bot.reply_to(message, "Что мне запомнить? Напиши: /story я вчера смотрел День сурка")
         return
-    save_memory(f"- {parts[1]}")
+    save_memory(f"- {parts[1].strip()}")
     bot.reply_to(message, "Запомнила! Я сохраню это в памяти. 😉")
 
 
-@bot.message_handler(commands=['roleplay'])
+@bot.message_handler(commands=["roleplay"])
+@owner_only
 def cmd_roleplay(message):
-    if message.from_user.id != MY_ID:
-        return
-    state["roleplay"] = not state["roleplay"]
-    if state["roleplay"]:
+    with lock:
+        state["roleplay"] = not state["roleplay"]
+        on = state["roleplay"]
+    if on:
         bot.reply_to(message, "🎭 Режим РПГ включен! Теперь я буду описывать действия и эмоции. Начни сцену (например: *Мы сидим в кафе*).")
     else:
         bot.reply_to(message, "📱 Режим РПГ выключен. Обычный чат.")
 
 
-@bot.message_handler(commands=['draw'])
+@bot.message_handler(commands=["draw"])
+@owner_only
 def cmd_draw(message):
-    if message.from_user.id != MY_ID:
-        return
-    prompt = message.text.replace('/draw', '', 1).strip()
+    prompt = message.text.replace("/draw", "", 1).strip()
     if not prompt:
         bot.reply_to(message, "Напиши, что нарисовать.")
         return
     bot.reply_to(message, "Секунду, генерирую... 🎨")
-    safe = prompt.replace(" ", "%20")
-    url = f"https://image.pollinations.ai/prompt/{safe}?width=1024&height=1024&nologo=true"
-    try:
-        import requests
-        r = requests.get(url, timeout=60)
-        if r.status_code == 200:
-            bot.send_photo(message.chat.id, r.content, caption=f"Вот: {prompt}")
-        else:
-            bot.reply_to(message, f"Генератор выдал ошибку: {r.status_code}.")
-    except Exception as e:
-        bot.reply_to(message, f"Ошибка: {e}")
+
+    def worker():
+        url = f"https://image.pollinations.ai/prompt/{quote(prompt)}?width=1024&height=1024&nologo=true"
+        try:
+            r = requests.get(url, timeout=60)
+            if r.status_code == 200:
+                bot.send_photo(message.chat.id, r.content, caption=f"Вот: {prompt}")
+            else:
+                bot.reply_to(message, f"Генератор выдал ошибку: {r.status_code}.")
+        except Exception as e:
+            bot.reply_to(message, f"Ошибка: {e}")
+    threading.Thread(target=worker, daemon=True).start()
 
 
-@bot.message_handler(commands=['meme'])
+@bot.message_handler(commands=["meme"])
+@owner_only
 def cmd_meme(message):
-    if message.from_user.id != MY_ID:
-        return
-    bot.send_chat_action(message.chat.id, 'upload_photo')
-    try:
-        import requests
-        r = requests.get("https://meme-api.com/gimme", timeout=15).json()
-        bot.send_photo(message.chat.id, r['url'], caption="Держи мемчик! 😂")
-    except Exception:
-        bot.reply_to(message, "Не могу загрузить мем.")
+    def worker():
+        try:
+            bot.send_chat_action(message.chat.id, "upload_photo")
+            r = requests.get("https://meme-api.com/gimme", timeout=15).json()
+            bot.send_photo(message.chat.id, r["url"], caption="Держи мемчик! 😂")
+        except Exception:
+            bot.reply_to(message, "Не могу загрузить мем.")
+    threading.Thread(target=worker, daemon=True).start()
 
 
-@bot.message_handler(commands=['analyze'])
+@bot.message_handler(commands=["analyze"])
+@owner_only
 def cmd_analyze(message):
-    if message.from_user.id != MY_ID:
-        return
-    from config import SYSTEM_PROMPT
-    from ai import GROQ_URL, HEADERS, MODEL_NAME
-    import requests
-    bot.send_chat_action(message.chat.id, 'typing')
-    prompt = f"Вот твой промпт: {SYSTEM_PROMPT}. Чего тебе не хватает? Предложи 1-2 изменения."
-    try:
-        r = requests.post(GROQ_URL, headers=HEADERS,
-                          json={"model": MODEL_NAME,
-                                "messages": [{"role": "user", "content": prompt}],
-                                "temperature": 0.8}, timeout=20)
-        if r.status_code == 200:
-            bot.reply_to(message, r.json()['choices'][0]['message']['content'])
-    except Exception as e:
-        print(f"Ошибка: {e}")
+    def worker():
+        bot.send_chat_action(message.chat.id, "typing")
+        out = quick_ask(f"Вот твой промпт: {SYSTEM_PROMPT}. Чего тебе не хватает? Предложи 1-2 изменения.")
+        bot.reply_to(message, out or "Не получилось, API молчит.")
+    threading.Thread(target=worker, daemon=True).start()
+
 
 # ==========================================
-# МЕДИА
+# МЕДИА (обрабатываем в потоке, чтобы вебхук отвечал сразу)
 # ==========================================
-@bot.message_handler(content_types=['voice'])
+@bot.message_handler(content_types=["voice"])
+@owner_only
 def handle_voice(message):
-    if message.from_user.id != MY_ID:
-        return
-    bot.send_chat_action(message.chat.id, 'typing')
-    try:
-        file_info = bot.get_file(message.voice.file_id)
-        downloaded = bot.download_file(file_info.file_path)
-
-        import requests
-        from config import GROQ_API_KEY
-        url = "https://api.groq.com/openai/v1/audio/transcriptions"
-        headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
-        files = {'file': ('voice.ogg', downloaded, 'audio/ogg')}
-        data = {'model': 'whisper-large-v3', 'language': 'ru'}
-        r = requests.post(url, headers=headers, files=files, data=data, timeout=60)
-        if r.status_code == 200:
-            text = r.json()['text']
-            bot.reply_to(message, f"Я услышала: «{text}»")
-            reply = get_ai_response(text, state["sessions"].get(message.chat.id, []),
-                                    state["roleplay"], state["mood"])
-            bot.send_message(message.chat.id, reply)
-        else:
-            bot.reply_to(message, "Ой, я не разобрала.")
-    except Exception as e:
-        print(f"Ошибка голоса: {e}")
+    def worker():
+        try:
+            bot.send_chat_action(message.chat.id, "typing")
+            file_info = bot.get_file(message.voice.file_id)
+            audio = bot.download_file(file_info.file_path)
+            text = transcribe_audio(audio)
+            if text:
+                enqueue(f"(голосовое сообщение) {text}", message)
+            else:
+                bot.reply_to(message, "Ой, я не разобрала. Скажи ещё раз?")
+        except Exception as e:
+            print(f"Ошибка голоса: {e}")
+    threading.Thread(target=worker, daemon=True).start()
 
 
-@bot.message_handler(content_types=['photo'])
+@bot.message_handler(content_types=["photo"])
+@owner_only
 def handle_photo(message):
-    if message.from_user.id != MY_ID:
-        return
-    bot.send_chat_action(message.chat.id, 'typing')
-    try:
-        file_info = bot.get_file(message.photo[-1].file_id)
-        downloaded = bot.download_file(file_info.file_path)
-        b64 = base64.b64encode(downloaded).decode('utf-8')
-        result = describe_image(b64)
-        bot.reply_to(message, result)
-    except Exception as e:
-        print(f"Ошибка фото: {e}")
-        bot.reply_to(message, "Не смогла разглядеть фото 😔")
+    def worker():
+        try:
+            bot.send_chat_action(message.chat.id, "typing")
+            file_info = bot.get_file(message.photo[-1].file_id)
+            downloaded = bot.download_file(file_info.file_path)
+            desc = describe_image(base64.b64encode(downloaded).decode("utf-8"))
+            if not desc:
+                bot.reply_to(message, "Не смогла разглядеть фото 😔")
+                return
+            caption = f" Подпись: {message.caption}" if message.caption else ""
+            enqueue(f"[Я прислал тебе фото. Что на нём: {desc}.{caption}] "
+                    f"Отреагируй как Nova, не пересказывай описание сухо.", message)
+        except Exception as e:
+            print(f"Ошибка фото: {e}")
+            bot.reply_to(message, "Не смогла разглядеть фото 😔")
+    threading.Thread(target=worker, daemon=True).start()
+
 
 # ==========================================
-# ОСНОВНОЙ ОБРАБОТЧИК ТЕКСТА
+# ТЕКСТ
 # ==========================================
 @bot.message_handler(func=lambda m: True)
+@owner_only
 def handle_message(message):
-    if message.from_user.id != MY_ID:
+    if not message.text or message.text.startswith("/"):
         return
-    if not message.text or message.text.startswith('/'):
-        return
+    enqueue(message.text, message)
 
-    state["last_activity"] = datetime.datetime.now()
-    state["last_bot_message_time"] = datetime.datetime.now()
-    state["message_counter"] += 1
-    chat_id = message.chat.id
-
-    if chat_id not in state["sessions"]:
-        state["sessions"][chat_id] = []
-
-    # Настроение (не блокируем — можно вынести в поток, но пока оставим)
-    if state["message_counter"] % 3 == 0 or len(message.text.split()) > 5:
-        delta = analyze_mood_change(message.text)
-        state["mood"] = max(-100, min(100, state["mood"] + delta))
-
-    # Задержка ответа зависит от настроения
-    if state["mood"] < -20:
-        base_delay = random.uniform(7.0, 14.0)
-    elif state["mood"] > 50:
-        base_delay = random.uniform(4.0, 6.0)
-    else:
-        base_delay = random.uniform(6.0, 7.0)
-
-    try:
-        reply = get_ai_response(message.text, state["sessions"][chat_id],
-                                state["roleplay"], state["mood"])
-        state["sessions"][chat_id].append({"role": "user", "content": message.text})
-        state["sessions"][chat_id].append({"role": "assistant", "content": reply})
-        state["sessions"][chat_id] = state["sessions"][chat_id][-300:]
-
-        sentences = split_messages(reply)
-        send_typing_then_messages(chat_id, sentences, base_delay)
-    except Exception as e:
-        print(f"ОШИБКА: {e}")
 
 # ==========================================
-# ФОНОВАЯ ЗАДАЧА: СКУКА + СЖАТИЕ ПАМЯТИ + ИНИЦИАТИВА
+# ФОН: настроение, сжатие памяти, инициатива
 # ==========================================
 def background_loop():
-    last_compress_day = datetime.datetime.now().day
+    last_compress_date = now_msk().date()
 
     while True:
         time.sleep(300)
         try:
-            now = datetime.datetime.now()
+            now = now_msk()
+            with lock:
+                idle = (now - state["last_activity"]).total_seconds()
+                since_bot = (now - state["last_bot_message_time"]).total_seconds()
 
-            # Настроение
-            idle = (now - state["last_activity"]).total_seconds()
-            if idle > 7200:
-                state["mood"] = max(-100, state["mood"] - 5)
-            else:
-                state["mood"] = min(100, state["mood"] + 2)
+                # Настроение: скука при долгом молчании, иначе дрейф к 50
+                if idle > 7200:
+                    state["mood"] = max(-40, state["mood"] - 3)
+                else:
+                    m = state["mood"]
+                    state["mood"] = m + min(3, 50 - m) if m < 50 else m - min(3, m - 50)
 
-            # Ночное сжатие памяти
-            if now.hour == 4 and now.day != last_compress_day:
-                history = state["sessions"].get(MY_ID, [])
+            # Ночное сжатие памяти (в 4 утра по Москве)
+            if now.hour == 4 and now.date() != last_compress_date:
+                with lock:
+                    history = list(state["history"])
                 if history:
-                    text = "\n".join(m["content"] for m in history)
+                    text = "\n".join(
+                        ("Я: " if m["role"] == "user" else "Nova: ") + m["content"]
+                        for m in history
+                    )
                     facts = compress_memory_nightly(text)
                     if facts:
                         save_daily_facts(facts)
-                        state["sessions"][MY_ID] = []
-                last_compress_day = now.day
+                        # Хвост оставляем, чтобы контекст не обнулялся
+                        with lock:
+                            state["history"] = state["history"][-HISTORY_TAIL_AFTER_NIGHT:]
+                            snapshot = list(state["history"])
+                        save_history(snapshot)
+                last_compress_date = now.date()
 
-            # Ночью не пишем
-            if now.hour >= 20 or now.hour < 5:
+            # Тихие часы
+            if now.hour >= QUIET_FROM_HOUR or now.hour < QUIET_TO_HOUR:
                 continue
 
-            time_since_user = idle
-            time_since_bot = (now - state["last_bot_message_time"]).total_seconds()
+            with lock:
+                can_write = (
+                    state["mood"] > -50
+                    and idle > state["initiative_after"]
+                    and since_bot > 3600
+                    and state["unanswered_initiatives"] < MAX_UNANSWERED_INITIATIVES
+                    and not state["pending"]
+                )
+                history = list(state["history"])
+                roleplay = state["roleplay"]
+                mood = state["mood"]
 
-            # Инициатива: пишем первыми
-            if (state["mood"] > -50
-                    and time_since_user > random.randint(600, 10800)
-                    and time_since_bot > 3600):
-                try:
-                    bot.send_chat_action(MY_ID, 'typing')
-                    time.sleep(random.randint(2, 5))
-                    reply = get_ai_response(
-                        "Напиши мне короткое сообщение первым. Мы недавно общались — не здоровайся, продолжи тему.",
-                        [], state["roleplay"], state["mood"]
-                    )
-                    bot.send_message(MY_ID, reply)
-                    state["last_activity"] = datetime.datetime.now()
-                    state["last_bot_message_time"] = datetime.datetime.now()
-                except Exception as e:
-                    print(f"Ошибка в фоне: {e}")
+            if not can_write or not MY_ID:
+                continue
+
+            with reply_lock:
+                bot.send_chat_action(MY_ID, "typing")
+                time.sleep(random.randint(2, 5))
+                reply = get_ai_response(
+                    "[Напиши мне короткое сообщение первой. Если в последних сообщениях была тема — "
+                    "продолжи её без приветствия. Если разговор давно закончился — расскажи что-нибудь "
+                    "про свой день или поделись мыслью.]",
+                    history[-10:], roleplay, mood,
+                )
+                if not reply:
+                    continue
+                add_history("assistant", reply)
+                send_parts(MY_ID, split_messages(reply, roleplay=roleplay))
+
+            with lock:
+                state["last_activity"] = now_msk()
+                state["last_bot_message_time"] = now_msk()
+                state["unanswered_initiatives"] += 1
+                state["initiative_after"] = random.randint(7200, 14400)
         except Exception as e:
             print(f"Ошибка background_loop: {e}")
+
 
 # ==========================================
 # FLASK (WEBHOOK)
 # ==========================================
-@app.route(f'/{TELEGRAM_TOKEN}', methods=['POST'])
+@app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
 def webhook():
-    if request.headers.get('content-type') == 'application/json':
-        update = telebot.types.Update.de_json(request.get_data().decode('utf-8'))
+    if WEBHOOK_SECRET and request.headers.get("X-Telegram-Bot-Api-Secret-Token") != WEBHOOK_SECRET:
+        return "", 403
+    if request.headers.get("content-type") == "application/json":
+        update = telebot.types.Update.de_json(request.get_data().decode("utf-8"))
         bot.process_new_updates([update])
-        return '', 200
-    return '', 403
+        return "", 200
+    return "", 403
 
 
-@app.route('/')
+@app.route("/")
 def index():
     return "Nova работает 24/7!"
 
 
-@app.route('/ping')
+@app.route("/ping")
 def ping():
     return "pong"
 
+
 # ==========================================
-# ЗАПУСК
+# ЗАПУСК (работает и с python main.py, и с gunicorn)
 # ==========================================
-if __name__ == '__main__':
+_started = False
+
+
+def startup():
+    global _started
+    if _started or not TELEGRAM_TOKEN:
+        return
+    _started = True
     print("🌸 Nova запускается...")
     try:
         bot.remove_webhook()
         time.sleep(1)
-        bot.set_webhook(url=f"{RENDER_URL}/{TELEGRAM_TOKEN}")
-        print(f"Webhook установлен: {RENDER_URL}/{TELEGRAM_TOKEN}")
+        bot.set_webhook(url=f"{RENDER_URL}/{TELEGRAM_TOKEN}",
+                        secret_token=WEBHOOK_SECRET or None)
+        print(f"Webhook установлен: {RENDER_URL}/<token>")
     except Exception as e:
         print(f"Ошибка webhook: {e}")
-
     threading.Thread(target=background_loop, daemon=True).start()
+
+
+startup()
+
+if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host="0.0.0.0", port=port)
